@@ -37,7 +37,7 @@ class KiroPlugin(AgentPlugin):
         script_path = self._script_path()
         with open(script_path, "w", encoding="utf-8") as f:
             f.write(script)
-        os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC)
+        os.chmod(script_path, stat.S_IRWXU)
 
         guard_script_path = config.get("guard_script_path", "")
 

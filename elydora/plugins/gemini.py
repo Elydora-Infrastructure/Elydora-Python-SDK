@@ -33,7 +33,7 @@ class GeminiPlugin(AgentPlugin):
         hook_path = self._hook_path()
         with open(hook_path, "w", encoding="utf-8") as f:
             f.write(script)
-        os.chmod(hook_path, os.stat(hook_path).st_mode | stat.S_IEXEC)
+        os.chmod(hook_path, stat.S_IRWXU)
 
         guard_script_path = config.get("guard_script_path", "")
 

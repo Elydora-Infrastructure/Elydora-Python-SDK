@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 
 from .base import AgentPlugin, InstallConfig, PluginStatus
 
@@ -42,6 +43,7 @@ class OpenCodePlugin(AgentPlugin):
         plugin_path = self._plugin_path()
         with open(plugin_path, "w", encoding="utf-8") as f:
             f.write(js_content)
+        os.chmod(plugin_path, stat.S_IRWXU)
 
         print(f"Elydora hook installed for OpenCode.")
         print(f"  Plugin: {plugin_path}")

@@ -29,6 +29,10 @@ from .types import (
 )
 from .utils import generate_nonce, generate_uuidv7
 
+# The genesis chain hash: base64url encoding of 32 zero bytes.
+# Must match the backend's GENESIS_CHAIN_HASH constant exactly.
+GENESIS_CHAIN_HASH = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
 
 class ElydoraClient:
     """Synchronous client for the Elydora API.
@@ -62,7 +66,7 @@ class ElydoraClient:
         self.max_retries = max_retries
         self.token = token
 
-        self._prev_chain_hash = ""
+        self._prev_chain_hash = GENESIS_CHAIN_HASH
         self._kid = ""
         self._session = requests.Session()
 
@@ -102,16 +106,20 @@ class ElydoraClient:
                 resp = self._session.request(
                     method, url, json=json_body, params=params, headers=hdrs, timeout=30
                 )
+                # Retry on 429 or 5xx
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    if attempt < self.max_retries - 1:
+                        retry_after = resp.headers.get("Retry-After")
+                        if retry_after and retry_after.isdigit():
+                            delay = int(retry_after)
+                        else:
+                            delay = min(2 ** attempt, 8)
+                        time.sleep(delay)
+                        continue
                 return self._handle_response(resp)
             except ElydoraError:
                 raise
-            except requests.exceptions.ConnectionError as exc:
-                last_exc = exc
-                if attempt < self.max_retries - 1:
-                    time.sleep(min(2 ** attempt, 8))
-                    continue
-                raise
-            except requests.exceptions.Timeout as exc:
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
                 last_exc = exc
                 if attempt < self.max_retries - 1:
                     time.sleep(min(2 ** attempt, 8))
