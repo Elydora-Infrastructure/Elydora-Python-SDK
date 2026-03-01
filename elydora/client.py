@@ -14,12 +14,17 @@ from .types import (
     AuthLoginResponse,
     AuthRegisterResponse,
     CreateExportResponse,
+    DeleteAgentResponse,
     EOR,
     GetAgentResponse,
     GetEpochResponse,
     GetExportResponse,
+    GetMeResponse,
     GetOperationResponse,
+    HealthResponse,
+    IssueTokenResponse,
     JWKSResponse,
+    ListAgentsResponse,
     ListEpochsResponse,
     ListExportsResponse,
     RegisterAgentRequest,
@@ -181,6 +186,17 @@ class ElydoraClient:
         resp = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=30)
         return ElydoraClient._handle_response(resp)
 
+    def get_me(self) -> GetMeResponse:
+        """Get the current user's profile."""
+        return self._request("GET", "/v1/auth/me")
+
+    def issue_token(self, ttl_seconds: Optional[int] = None) -> IssueTokenResponse:
+        """Issue an API token with an optional TTL."""
+        body: Dict[str, Any] = {}
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        return self._request("POST", "/v1/auth/token", json_body=body)
+
     # -----------------------------------------------------------------
     # Agent management
     # -----------------------------------------------------------------
@@ -196,6 +212,18 @@ class ElydoraClient:
     def freeze_agent(self, agent_id: str, reason: str) -> None:
         """Freeze an agent."""
         self._request("POST", f"/v1/agents/{agent_id}/freeze", json_body={"reason": reason})
+
+    def list_agents(self) -> ListAgentsResponse:
+        """List all agents for the organization."""
+        return self._request("GET", "/v1/agents")
+
+    def unfreeze_agent(self, agent_id: str, reason: str) -> None:
+        """Unfreeze an agent."""
+        self._request("POST", f"/v1/agents/{agent_id}/unfreeze", json_body={"reason": reason})
+
+    def delete_agent(self, agent_id: str) -> DeleteAgentResponse:
+        """Delete an agent."""
+        return self._request("DELETE", f"/v1/agents/{agent_id}")
 
     def revoke_key(self, agent_id: str, kid: str, reason: str) -> None:
         """Revoke an agent's key."""
@@ -344,6 +372,14 @@ class ElydoraClient:
         """Retrieve export status and download URL."""
         return self._request("GET", f"/v1/exports/{export_id}")
 
+    def download_export(self, export_id: str) -> bytes:
+        """Download an export file as raw bytes."""
+        url = f"{self.base_url}/v1/exports/{export_id}/download"
+        resp = self._session.get(url, headers=self._headers(), timeout=30)
+        if resp.status_code >= 400:
+            self._handle_response(resp)
+        return resp.content
+
     # -----------------------------------------------------------------
     # JWKS
     # -----------------------------------------------------------------
@@ -351,5 +387,15 @@ class ElydoraClient:
     def get_jwks(self) -> JWKSResponse:
         """Retrieve the platform JWKS (public, no auth required)."""
         url = f"{self.base_url}/.well-known/elydora/jwks.json"
+        resp = self._session.get(url, timeout=30)
+        return self._handle_response(resp)
+
+    # -----------------------------------------------------------------
+    # Health
+    # -----------------------------------------------------------------
+
+    def health(self) -> HealthResponse:
+        """Check API health (public, no auth required)."""
+        url = f"{self.base_url}/v1/health"
         resp = self._session.get(url, timeout=30)
         return self._handle_response(resp)

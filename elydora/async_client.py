@@ -15,12 +15,17 @@ from .types import (
     AuthLoginResponse,
     AuthRegisterResponse,
     CreateExportResponse,
+    DeleteAgentResponse,
     EOR,
     GetAgentResponse,
     GetEpochResponse,
     GetExportResponse,
+    GetMeResponse,
     GetOperationResponse,
+    HealthResponse,
+    IssueTokenResponse,
     JWKSResponse,
+    ListAgentsResponse,
     ListEpochsResponse,
     ListExportsResponse,
     RegisterAgentRequest,
@@ -29,6 +34,10 @@ from .types import (
     VerifyOperationResponse,
 )
 from .utils import generate_nonce, generate_uuidv7
+
+# The genesis chain hash: base64url encoding of 32 zero bytes.
+# Must match the backend's GENESIS_CHAIN_HASH constant exactly.
+GENESIS_CHAIN_HASH = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 
 class AsyncElydoraClient:
@@ -63,7 +72,7 @@ class AsyncElydoraClient:
         self.max_retries = max_retries
         self.token = token
 
-        self._prev_chain_hash = ""
+        self._prev_chain_hash = GENESIS_CHAIN_HASH
         self._kid = ""
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -186,6 +195,17 @@ class AsyncElydoraClient:
             ) as resp:
                 return await AsyncElydoraClient._handle_response(resp)
 
+    async def get_me(self) -> GetMeResponse:
+        """Get the current user's profile."""
+        return await self._request("GET", "/v1/auth/me")
+
+    async def issue_token(self, ttl_seconds: Optional[int] = None) -> IssueTokenResponse:
+        """Issue an API token with an optional TTL."""
+        body: Dict[str, Any] = {}
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        return await self._request("POST", "/v1/auth/token", json_body=body)
+
     # -----------------------------------------------------------------
     # Agent management
     # -----------------------------------------------------------------
@@ -201,6 +221,18 @@ class AsyncElydoraClient:
     async def freeze_agent(self, agent_id: str, reason: str) -> None:
         """Freeze an agent."""
         await self._request("POST", f"/v1/agents/{agent_id}/freeze", json_body={"reason": reason})
+
+    async def list_agents(self) -> ListAgentsResponse:
+        """List all agents for the organization."""
+        return await self._request("GET", "/v1/agents")
+
+    async def unfreeze_agent(self, agent_id: str, reason: str) -> None:
+        """Unfreeze an agent."""
+        await self._request("POST", f"/v1/agents/{agent_id}/unfreeze", json_body={"reason": reason})
+
+    async def delete_agent(self, agent_id: str) -> DeleteAgentResponse:
+        """Delete an agent."""
+        return await self._request("DELETE", f"/v1/agents/{agent_id}")
 
     async def revoke_key(self, agent_id: str, kid: str, reason: str) -> None:
         """Revoke an agent's key."""
@@ -347,6 +379,17 @@ class AsyncElydoraClient:
         """Retrieve export status and download URL."""
         return await self._request("GET", f"/v1/exports/{export_id}")
 
+    async def download_export(self, export_id: str) -> bytes:
+        """Download an export file as raw bytes."""
+        url = f"{self.base_url}/v1/exports/{export_id}/download"
+        session = await self._get_session()
+        async with session.get(
+            url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)
+        ) as resp:
+            if resp.status >= 400:
+                await self._handle_response(resp)
+            return await resp.read()
+
     # -----------------------------------------------------------------
     # JWKS
     # -----------------------------------------------------------------
@@ -354,6 +397,17 @@ class AsyncElydoraClient:
     async def get_jwks(self) -> JWKSResponse:
         """Retrieve the platform JWKS (public, no auth required)."""
         url = f"{self.base_url}/.well-known/elydora/jwks.json"
+        session = await self._get_session()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            return await self._handle_response(resp)
+
+    # -----------------------------------------------------------------
+    # Health
+    # -----------------------------------------------------------------
+
+    async def health(self) -> HealthResponse:
+        """Check API health (public, no auth required)."""
+        url = f"{self.base_url}/v1/health"
         session = await self._get_session()
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
             return await self._handle_response(resp)

@@ -117,6 +117,12 @@ reg = ElydoraClient.register(base_url, email, password, display_name=None, org_n
 
 # Login and receive a JWT
 auth = ElydoraClient.login(base_url, email, password)
+
+# Get current authenticated user profile
+me = client.get_me()
+
+# Issue a new API token (with optional TTL in seconds)
+token_resp = client.issue_token(ttl_seconds=3600)
 ```
 
 ### Operations
@@ -159,6 +165,15 @@ client.freeze_agent(agent_id, reason="security review")
 
 # Revoke a key
 client.revoke_key(agent_id, kid, reason="key rotation")
+
+# List all agents in the organization
+agents_resp = client.list_agents()
+
+# Unfreeze a previously frozen agent
+client.unfreeze_agent(agent_id, reason="review complete")
+
+# Delete an agent permanently
+deleted_resp = client.delete_agent(agent_id)
 ```
 
 ### Audit
@@ -193,12 +208,76 @@ export = client.create_export(
 
 exports = client.list_exports()
 detail = client.get_export(export_id)
+
+# Download export file data
+data = client.download_export(export_id)
 ```
 
 ### JWKS
 
 ```python
 jwks = client.get_jwks()
+```
+
+### Health
+
+```python
+# Check API health (no authentication required)
+health = client.health()
+# health["status"], health["version"], health["protocol_version"], health["timestamp"]
+```
+
+### Crypto Functions
+
+The SDK exports low-level cryptographic primitives for advanced use:
+
+```python
+from elydora import (
+    jcs_canonicalize,          # RFC 8785 JSON Canonicalization
+    sha256_base64url,          # SHA-256 hash as base64url
+    compute_chain_hash,        # Chain hash computation
+    compute_payload_hash,      # Payload hash (SHA-256 of JCS-canonicalized payload)
+    sign_ed25519,              # Ed25519 signing
+    sign_eor,                  # Sign an EOR dict
+    get_public_key_base64url,  # Derive public key from private seed
+)
+```
+
+### Utility Functions
+
+```python
+from elydora import (
+    base64url_encode,   # Encode bytes to base64url (no padding)
+    base64url_decode,   # Decode base64url string to bytes
+    generate_nonce,     # Generate 16-byte random nonce (base64url)
+    generate_uuidv7,    # Generate UUIDv7 (time-ordered, RFC 9562)
+)
+```
+
+### Type Definitions
+
+All types are `TypedDict` classes for structural typing:
+
+```python
+from elydora import (
+    # Protocol types
+    EOR,                       # Elydora Operation Record
+    EAR,                       # Elydora Acknowledgment Receipt
+
+    # Entity types
+    Agent, AgentKey, Operation, Receipt, Epoch, Export, Organization, User,
+
+    # API response types
+    RegisterAgentResponse, GetAgentResponse, ListAgentsResponse,
+    DeleteAgentResponse, SubmitOperationResponse, GetOperationResponse,
+    VerifyOperationResponse, AuditQueryResponse, GetEpochResponse,
+    ListEpochsResponse, CreateExportResponse, GetExportResponse,
+    ListExportsResponse, JWKSResponse, AuthRegisterResponse,
+    AuthLoginResponse, GetMeResponse, IssueTokenResponse, HealthResponse,
+
+    # Request types
+    RegisterAgentRequest,
+)
 ```
 
 ## Error Handling

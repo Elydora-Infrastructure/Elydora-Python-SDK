@@ -27,6 +27,8 @@ from .types import (
     RegisterAgentRequest,
     RegisterAgentResponse,
     GetAgentResponse,
+    ListAgentsResponse,
+    DeleteAgentResponse,
     SubmitOperationResponse,
     GetOperationResponse,
     VerifyOperationResponse,
@@ -39,6 +41,9 @@ from .types import (
     JWKSResponse,
     AuthRegisterResponse,
     AuthLoginResponse,
+    GetMeResponse,
+    IssueTokenResponse,
+    HealthResponse,
 )
 
 __version__ = "1.0.0"
@@ -71,6 +76,8 @@ __all__ = [
     "RegisterAgentRequest",
     "RegisterAgentResponse",
     "GetAgentResponse",
+    "ListAgentsResponse",
+    "DeleteAgentResponse",
     "SubmitOperationResponse",
     "GetOperationResponse",
     "VerifyOperationResponse",
@@ -83,4 +90,7 @@ __all__ = [
     "JWKSResponse",
     "AuthRegisterResponse",
     "AuthLoginResponse",
+    "GetMeResponse",
+    "IssueTokenResponse",
+    "HealthResponse",
 ]

@@ -291,3 +291,27 @@ class AuthRegisterResponse(TypedDict):
 class AuthLoginResponse(TypedDict):
     user: User
     token: str
+
+
+class ListAgentsResponse(TypedDict):
+    agents: List[Agent]
+
+
+class DeleteAgentResponse(TypedDict):
+    deleted: bool
+
+
+class GetMeResponse(TypedDict):
+    user: User
+
+
+class IssueTokenResponse(TypedDict):
+    token: str
+    expires_at: Optional[int]
+
+
+class HealthResponse(TypedDict):
+    status: str
+    version: str
+    protocol_version: str
+    timestamp: int
