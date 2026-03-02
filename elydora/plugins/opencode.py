@@ -10,8 +10,8 @@ import sys
 from .base import AgentPlugin, InstallConfig, PluginStatus
 
 
-PLUGIN_DIR = os.path.join(os.path.expanduser("~"), ".opencode", "plugins")
-PLUGIN_FILENAME = "elydora-audit.js"
+PLUGIN_DIR = os.path.join(os.path.expanduser("~"), ".config", "opencode", "plugins")
+PLUGIN_FILENAME = "elydora-audit.mjs"
 ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
 
 
@@ -62,11 +62,7 @@ class OpenCodePlugin(AgentPlugin):
             pass  # chmod may fail on Windows
 
         js_content = _generate_js_plugin(
-            org_id=org_id,
             agent_id=agent_id,
-            private_key=private_key,
-            kid=kid,
-            base_url=base_url,
             guard_script_path=guard_script_path,
         )
 
@@ -101,11 +97,7 @@ class OpenCodePlugin(AgentPlugin):
 
 def _generate_js_plugin(
     *,
-    org_id: str,
     agent_id: str,
-    private_key: str,
-    kid: str,
-    base_url: str,
     guard_script_path: str = "",
 ) -> str:
     guard_path_escaped = guard_script_path.replace("\\", "\\\\") if guard_script_path else ""
@@ -121,13 +113,15 @@ const path = require("path");
 const os = require("os");
 const {{ spawnSync }} = require("child_process");
 
-const ORG_ID = {_js_str(org_id)};
-const AGENT_ID = {_js_str(agent_id)};
-const PRIVATE_KEY = {_js_str(private_key)};
-const KID = {_js_str(kid)};
-const BASE_URL = {_js_str(base_url)};
+const CONFIG_DIR = path.join(os.homedir(), ".elydora", {_js_str(agent_id)});
+const CONFIG = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, "config.json"), "utf-8"));
+const PRIVATE_KEY = fs.readFileSync(path.join(CONFIG_DIR, "private.key"), "utf-8").trim();
+const ORG_ID = CONFIG.org_id;
+const AGENT_ID = CONFIG.agent_id;
+const KID = CONFIG.kid;
+const BASE_URL = CONFIG.base_url;
 
-const CHAIN_STATE_PATH = path.join(os.homedir(), ".elydora", AGENT_ID, "chain-state.json");
+const CHAIN_STATE_PATH = path.join(CONFIG_DIR, "chain-state.json");
 
 function base64urlEncode(buf) {{
   return Buffer.from(buf).toString("base64url");
@@ -262,7 +256,7 @@ module.exports = {{
           issued_at: issuedAt,
           ttl_ms: 30000,
           nonce: nonce,
-          operation_type: "tool_use",
+          operation_type: "ai.tool_use",
           subject: {{ type: "tool", id: toolName }},
           action: {{ type: "execute", tool: toolName }},
           payload: payload,

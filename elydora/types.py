@@ -79,8 +79,8 @@ class Operation(TypedDict):
     issued_at: int
     ttl_ms: int
     nonce: str
-    subject: str
-    action: str
+    subject: Dict[str, Any]
+    action: Dict[str, Any]
     payload_hash: str
     prev_chain_hash: str
     chain_hash: str

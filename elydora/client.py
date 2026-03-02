@@ -72,7 +72,7 @@ class ElydoraClient:
         self.token = token
 
         self._prev_chain_hash = GENESIS_CHAIN_HASH
-        self._kid = ""
+        self._kid = agent_id + '-key-1'
         self._session = requests.Session()
 
     def set_kid(self, kid: str) -> None:
@@ -106,14 +106,14 @@ class ElydoraClient:
         hdrs = headers or self._headers()
 
         last_exc: Optional[Exception] = None
-        for attempt in range(self.max_retries):
+        for attempt in range(0, self.max_retries + 1):
             try:
                 resp = self._session.request(
                     method, url, json=json_body, params=params, headers=hdrs, timeout=30
                 )
                 # Retry on 429 or 5xx
                 if resp.status_code == 429 or resp.status_code >= 500:
-                    if attempt < self.max_retries - 1:
+                    if attempt < self.max_retries:
                         retry_after = resp.headers.get("Retry-After")
                         if retry_after and retry_after.isdigit():
                             delay = int(retry_after)
@@ -126,7 +126,7 @@ class ElydoraClient:
                 raise
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
                 last_exc = exc
-                if attempt < self.max_retries - 1:
+                if attempt < self.max_retries:
                     time.sleep(min(2 ** attempt, 8))
                     continue
                 raise
