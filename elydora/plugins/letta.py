@@ -1,4 +1,4 @@
-"""Claude Code plugin — merges PostToolUse hook into ~/.claude/settings.json."""
+"""Letta Code plugin — merges PreToolUse/PostToolUse hooks into ~/.letta/settings.json."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from .base import AgentPlugin, InstallConfig, PluginStatus
 from .hook_template import generate_hook_script
 
 
-SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".letta", "settings.json")
 ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
 
 
-class ClaudeCodePlugin(AgentPlugin):
-    """Install/uninstall Elydora audit hook for Claude Code."""
+class LettaPlugin(AgentPlugin):
+    """Install/uninstall Elydora audit hook for Letta Code."""
 
     @staticmethod
     def _hook_path_for(agent_id: str) -> str:
@@ -53,7 +53,6 @@ class ClaudeCodePlugin(AgentPlugin):
         except Exception:
             pass  # chmod may fail on Windows
 
-        # Write the hook script
         script = generate_hook_script(
             org_id=config.get("org_id", ""),
             agent_id=agent_id,
@@ -72,15 +71,15 @@ class ClaudeCodePlugin(AgentPlugin):
         guard_script_path = config.get("guard_script_path", "")
         python_exe = sys.executable
 
-        # Merge into Claude Code settings
         settings = _load_json(SETTINGS_PATH)
         hooks = settings.setdefault("hooks", {})
 
-        # --- PreToolUse (guard — freeze enforcement) ---
+        # --- PreToolUse (guard — freeze enforcement, PascalCase with matcher, no timeout_ms) ---
         pre_tool_use = hooks.setdefault("PreToolUse", [])
         pre_tool_use[:] = [h for h in pre_tool_use if not _is_elydora_hook(h)]
         if guard_script_path:
             pre_tool_use.append({
+                "matcher": "*",
                 "hooks": [
                     {
                         "type": "command",
@@ -89,13 +88,13 @@ class ClaudeCodePlugin(AgentPlugin):
                 ],
             })
 
-        # --- PostToolUse (audit logging) ---
+        # --- PostToolUse (audit logging, PascalCase with matcher, no timeout_ms) ---
         post_tool_use = hooks.setdefault("PostToolUse", [])
 
-        # Remove any existing Elydora hook entry
         post_tool_use[:] = [h for h in post_tool_use if not _is_elydora_hook(h)]
 
         post_tool_use.append({
+            "matcher": "*",
             "hooks": [
                 {
                     "type": "command",
@@ -105,12 +104,11 @@ class ClaudeCodePlugin(AgentPlugin):
         })
 
         _save_json(SETTINGS_PATH, settings)
-        print(f"Elydora hook installed for Claude Code.")
+        print(f"Elydora hook installed for Letta Code.")
         print(f"  Hook script: {hook_path}")
         print(f"  Settings: {SETTINGS_PATH}")
 
     def uninstall(self, agent_id: str = "") -> None:
-        # Remove hook entries from settings
         if os.path.exists(SETTINGS_PATH):
             settings = _load_json(SETTINGS_PATH)
             hooks = settings.get("hooks", {})
@@ -140,7 +138,7 @@ class ClaudeCodePlugin(AgentPlugin):
                 _save_json(SETTINGS_PATH, settings)
 
         # Hook script removal is handled by cli.py cmd_uninstall (rmtree of agent dir)
-        print("Elydora hook uninstalled from Claude Code.")
+        print("Elydora hook uninstalled from Letta Code.")
 
     def status(self) -> PluginStatus:
         # Scan ~/.elydora/*/hook.py for any installed hook
@@ -169,7 +167,7 @@ class ClaudeCodePlugin(AgentPlugin):
         else:
             details = "Not installed"
 
-        return PluginStatus(installed=installed, agent="claudecode", details=details)
+        return PluginStatus(installed=installed, agent="letta", details=details)
 
 
 def _is_elydora_hook(entry: dict, agent_id: str = "") -> bool:

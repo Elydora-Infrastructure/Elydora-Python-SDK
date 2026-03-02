@@ -15,6 +15,7 @@ else:
 class InstallConfig(TypedDict, total=False):
     org_id: str
     agent_id: str
+    agent_name: str
     private_key: str
     kid: str
     token: str
@@ -36,7 +37,7 @@ class AgentPlugin(ABC):
         """Install the Elydora hook for this agent."""
 
     @abstractmethod
-    def uninstall(self) -> None:
+    def uninstall(self, agent_id: str = "") -> None:
         """Remove the Elydora hook for this agent."""
 
     @abstractmethod

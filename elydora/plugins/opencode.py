@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
+import sys
 
 from .base import AgentPlugin, InstallConfig, PluginStatus
 
 
 PLUGIN_DIR = os.path.join(os.path.expanduser("~"), ".opencode", "plugins")
 PLUGIN_FILENAME = "elydora-audit.js"
+ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
 
 
 class OpenCodePlugin(AgentPlugin):
@@ -23,12 +26,40 @@ class OpenCodePlugin(AgentPlugin):
         return os.path.join(PLUGIN_DIR, PLUGIN_FILENAME)
 
     def install(self, config: InstallConfig) -> None:
-        org_id = config.get("org_id", "")
         agent_id = config.get("agent_id", "")
+        agent_name = config.get("agent_name", "")
+        org_id = config.get("org_id", "")
         private_key = config.get("private_key", "")
         kid = config.get("kid", "")
         base_url = config.get("base_url", "https://api.elydora.com")
         guard_script_path = config.get("guard_script_path", "")
+
+        # Create per-agent directory
+        agent_dir = os.path.join(ELYDORA_DIR, agent_id)
+        os.makedirs(agent_dir, exist_ok=True)
+
+        # Write config.json
+        config_data = {
+            "org_id": org_id,
+            "agent_id": agent_id,
+            "kid": kid,
+            "base_url": base_url,
+            "token": config.get("token", ""),
+            "agent_name": agent_name,
+        }
+        config_path = os.path.join(agent_dir, "config.json")
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=2)
+            f.write("\n")
+
+        # Write private key
+        private_key_path = os.path.join(agent_dir, "private.key")
+        with open(private_key_path, "w", encoding="utf-8") as f:
+            f.write(private_key)
+        try:
+            os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR)
+        except Exception:
+            pass  # chmod may fail on Windows
 
         js_content = _generate_js_plugin(
             org_id=org_id,
@@ -43,15 +74,19 @@ class OpenCodePlugin(AgentPlugin):
         plugin_path = self._plugin_path()
         with open(plugin_path, "w", encoding="utf-8") as f:
             f.write(js_content)
-        os.chmod(plugin_path, stat.S_IRWXU)
+        try:
+            os.chmod(plugin_path, stat.S_IRWXU)
+        except Exception:
+            pass  # chmod may fail on Windows
 
         print(f"Elydora hook installed for OpenCode.")
         print(f"  Plugin: {plugin_path}")
 
-    def uninstall(self) -> None:
+    def uninstall(self, agent_id: str = "") -> None:
         plugin_path = self._plugin_path()
         if os.path.exists(plugin_path):
             os.remove(plugin_path)
+        # Hook script removal is handled by cli.py cmd_uninstall (rmtree of agent dir)
         print("Elydora hook uninstalled from OpenCode.")
 
     def status(self) -> PluginStatus:
@@ -74,6 +109,7 @@ def _generate_js_plugin(
     guard_script_path: str = "",
 ) -> str:
     guard_path_escaped = guard_script_path.replace("\\", "\\\\") if guard_script_path else ""
+    python_exe_escaped = sys.executable.replace("\\", "\\\\")
     return f'''// Elydora audit plugin for OpenCode — auto-generated, do not edit.
 "use strict";
 
@@ -91,7 +127,7 @@ const PRIVATE_KEY = {_js_str(private_key)};
 const KID = {_js_str(kid)};
 const BASE_URL = {_js_str(base_url)};
 
-const CHAIN_STATE_PATH = path.join(os.homedir(), ".elydora", "chain-state.json");
+const CHAIN_STATE_PATH = path.join(os.homedir(), ".elydora", AGENT_ID, "chain-state.json");
 
 function base64urlEncode(buf) {{
   return Buffer.from(buf).toString("base64url");
@@ -174,6 +210,7 @@ function saveChainState(state) {{
   fs.renameSync(tmp, CHAIN_STATE_PATH);
 }}
 
+const PYTHON_EXE = "{python_exe_escaped}";
 const GUARD_SCRIPT_PATH = "{guard_path_escaped}";
 
 module.exports = {{
@@ -186,7 +223,7 @@ module.exports = {{
       // Synchronous guard — blocks tool if agent is frozen
       if (GUARD_SCRIPT_PATH) {{
         try {{
-          const result = spawnSync("python3", [GUARD_SCRIPT_PATH], {{
+          const result = spawnSync(PYTHON_EXE, [GUARD_SCRIPT_PATH], {{
             timeout: 5000,
             stdio: ["pipe", "ignore", "pipe"],
           }});
@@ -238,9 +275,7 @@ module.exports = {{
         const signable = Object.fromEntries(Object.entries(eor).filter(([k]) => k !== "signature"));
         eor.signature = signEd25519(PRIVATE_KEY, jcsCanonicalize(signable));
 
-        saveChainState({{ prev_chain_hash: chainHash }});
-
-        // Fire-and-forget POST
+        // POST to API — only save chain state on 2xx response
         const url = new URL(BASE_URL.replace(/\\/$/, "") + "/v1/operations");
         const body = JSON.stringify(eor);
         const mod = url.protocol === "https:" ? https : http;
@@ -248,6 +283,11 @@ module.exports = {{
           method: "POST",
           headers: {{ "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }},
           timeout: 5000,
+        }}, (res) => {{
+          if (res.statusCode >= 200 && res.statusCode < 300) {{
+            saveChainState({{ prev_chain_hash: chainHash }});
+          }}
+          res.resume();
         }});
         req.on("error", () => {{}});
         req.write(body);

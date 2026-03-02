@@ -7,7 +7,10 @@ Uses only stdlib argparse — zero external dependencies for the CLI itself.
 from __future__ import annotations
 
 import argparse
+import glob
+import json
 import os
+import shutil
 import sys
 from typing import Dict, Type
 
@@ -16,19 +19,23 @@ from .plugins.base import AgentPlugin, InstallConfig
 from .plugins.registry import SUPPORTED_AGENTS, get_agent_names
 from .plugins.hook_template import generate_guard_script
 from .plugins.claudecode import ClaudeCodePlugin
+from .plugins.copilot import CopilotPlugin
 from .plugins.cursor import CursorPlugin
 from .plugins.gemini import GeminiPlugin
-from .plugins.augment import AugmentPlugin
-from .plugins.kiro import KiroPlugin
+from .plugins.kirocli import KiroCliPlugin
+from .plugins.kiroide import KiroIdePlugin
+from .plugins.letta import LettaPlugin
 from .plugins.opencode import OpenCodePlugin
 
 
 PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
     "claudecode": ClaudeCodePlugin,
+    "copilot": CopilotPlugin,
     "cursor": CursorPlugin,
     "gemini": GeminiPlugin,
-    "augment": AugmentPlugin,
-    "kiro": KiroPlugin,
+    "kirocli": KiroCliPlugin,
+    "kiroide": KiroIdePlugin,
+    "letta": LettaPlugin,
     "opencode": OpenCodePlugin,
 }
 
@@ -56,11 +63,13 @@ def cmd_install(args: argparse.Namespace) -> None:
 
     print(f"Verified key pair (public key: {pub[:16]}...)")
 
+    # Create per-agent directory under ~/.elydora/{agent_id}/
+    agent_dir = os.path.join(os.path.expanduser("~"), ".elydora", args.agent_id)
+    os.makedirs(agent_dir, exist_ok=True)
+
     # Generate and write the guard script
-    guard_dir = os.path.join(os.path.expanduser("~"), ".elydora", "hooks")
-    os.makedirs(guard_dir, exist_ok=True)
-    guard_script_path = os.path.join(guard_dir, f"{agent_name}-guard.py")
-    guard_script = generate_guard_script(agent_name)
+    guard_script_path = os.path.join(agent_dir, "guard.py")
+    guard_script = generate_guard_script(agent_name, args.agent_id)
     with open(guard_script_path, "w", encoding="utf-8") as f:
         f.write(guard_script)
     try:
@@ -73,6 +82,7 @@ def cmd_install(args: argparse.Namespace) -> None:
     config: InstallConfig = {
         "org_id": args.org_id,
         "agent_id": args.agent_id,
+        "agent_name": agent_name,
         "private_key": args.private_key,
         "kid": args.kid,
         "base_url": args.base_url,
@@ -88,15 +98,39 @@ def cmd_install(args: argparse.Namespace) -> None:
 def cmd_uninstall(args: argparse.Namespace) -> None:
     """Handle the 'uninstall' subcommand."""
     plugin = _get_plugin(args.agent)
-    plugin.uninstall()
+    agent_id = getattr(args, "agent_id", None) or ""
+    plugin.uninstall(agent_id=agent_id)
 
-    # Remove the guard script
-    guard_script_path = os.path.join(
-        os.path.expanduser("~"), ".elydora", "hooks", f"{args.agent}-guard.py"
-    )
-    if os.path.exists(guard_script_path):
-        os.remove(guard_script_path)
-        print(f"  Removed guard script: {guard_script_path}")
+    # Determine which agent directory to remove
+    elydora_dir = os.path.join(os.path.expanduser("~"), ".elydora")
+    agent_id = getattr(args, "agent_id", None)
+
+    if not agent_id:
+        # Scan ~/.elydora/*/config.json for matching agent_name
+        pattern = os.path.join(elydora_dir, "*", "config.json")
+        for config_path in glob.glob(pattern):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                if cfg.get("agent_name") == args.agent:
+                    agent_id = cfg.get("agent_id")
+                    break
+            except Exception:
+                continue
+
+    if agent_id:
+        agent_dir = os.path.join(elydora_dir, agent_id)
+        if os.path.isdir(agent_dir):
+            shutil.rmtree(agent_dir)
+            print(f"  Removed agent directory: {agent_dir}")
+    else:
+        # Fallback: try to remove legacy guard script location
+        guard_script_path = os.path.join(
+            elydora_dir, "hooks", f"{args.agent}-guard.py"
+        )
+        if os.path.exists(guard_script_path):
+            os.remove(guard_script_path)
+            print(f"  Removed guard script: {guard_script_path}")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -144,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     # uninstall
     uninstall_parser = subparsers.add_parser("uninstall", help="Uninstall audit hook for an agent")
     uninstall_parser.add_argument("--agent", required=True, help="Agent name")
+    uninstall_parser.add_argument("--agent_id", default=None, help="Agent ID (if omitted, scans config files for matching agent name)")
 
     # status
     subparsers.add_parser("status", help="Show installation status of all agents")

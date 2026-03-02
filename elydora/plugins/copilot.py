@@ -1,4 +1,4 @@
-"""Claude Code plugin — merges PostToolUse hook into ~/.claude/settings.json."""
+"""Copilot CLI plugin — merges preToolUse/postToolUse hooks into .github/hooks/hooks.json (project-relative)."""
 
 from __future__ import annotations
 
@@ -11,12 +11,15 @@ from .base import AgentPlugin, InstallConfig, PluginStatus
 from .hook_template import generate_hook_script
 
 
-SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
 ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
 
 
-class ClaudeCodePlugin(AgentPlugin):
-    """Install/uninstall Elydora audit hook for Claude Code."""
+def _settings_path() -> str:
+    return os.path.join(os.getcwd(), ".github", "hooks", "hooks.json")
+
+
+class CopilotPlugin(AgentPlugin):
+    """Install/uninstall Elydora audit hook for Copilot CLI."""
 
     @staticmethod
     def _hook_path_for(agent_id: str) -> str:
@@ -53,7 +56,6 @@ class ClaudeCodePlugin(AgentPlugin):
         except Exception:
             pass  # chmod may fail on Windows
 
-        # Write the hook script
         script = generate_hook_script(
             org_id=config.get("org_id", ""),
             agent_id=agent_id,
@@ -72,75 +74,71 @@ class ClaudeCodePlugin(AgentPlugin):
         guard_script_path = config.get("guard_script_path", "")
         python_exe = sys.executable
 
-        # Merge into Claude Code settings
-        settings = _load_json(SETTINGS_PATH)
+        settings_path = _settings_path()
+        settings = _load_json(settings_path)
+        settings["version"] = 1
         hooks = settings.setdefault("hooks", {})
 
-        # --- PreToolUse (guard — freeze enforcement) ---
-        pre_tool_use = hooks.setdefault("PreToolUse", [])
+        # --- preToolUse (guard — freeze enforcement, camelCase) ---
+        pre_tool_use = hooks.setdefault("preToolUse", [])
         pre_tool_use[:] = [h for h in pre_tool_use if not _is_elydora_hook(h)]
         if guard_script_path:
             pre_tool_use.append({
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": f'"{python_exe}" {guard_script_path}',
-                    }
-                ],
+                "type": "command",
+                "bash": f'"{python_exe}" {guard_script_path}',
+                "powershell": f'"{python_exe}" {guard_script_path}',
+                "timeoutSec": 5,
             })
 
-        # --- PostToolUse (audit logging) ---
-        post_tool_use = hooks.setdefault("PostToolUse", [])
+        # --- postToolUse (audit logging, camelCase) ---
+        post_tool_use = hooks.setdefault("postToolUse", [])
 
-        # Remove any existing Elydora hook entry
         post_tool_use[:] = [h for h in post_tool_use if not _is_elydora_hook(h)]
 
         post_tool_use.append({
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": hook_path,
-                }
-            ],
+            "type": "command",
+            "bash": hook_path,
+            "powershell": hook_path,
+            "timeoutSec": 5,
         })
 
-        _save_json(SETTINGS_PATH, settings)
-        print(f"Elydora hook installed for Claude Code.")
+        _save_json(settings_path, settings)
+        print(f"Elydora hook installed for Copilot CLI.")
         print(f"  Hook script: {hook_path}")
-        print(f"  Settings: {SETTINGS_PATH}")
+        print(f"  Settings: {settings_path}")
 
     def uninstall(self, agent_id: str = "") -> None:
-        # Remove hook entries from settings
-        if os.path.exists(SETTINGS_PATH):
-            settings = _load_json(SETTINGS_PATH)
+        settings_path = _settings_path()
+        if os.path.exists(settings_path):
+            settings = _load_json(settings_path)
             hooks = settings.get("hooks", {})
             changed = False
 
-            # Remove PreToolUse entries
-            pre_tool_use = hooks.get("PreToolUse", [])
+            # Remove preToolUse entries
+            pre_tool_use = hooks.get("preToolUse", [])
             pre_filtered = [h for h in pre_tool_use if not _is_elydora_hook(h, agent_id)]
             if len(pre_filtered) != len(pre_tool_use):
-                hooks["PreToolUse"] = pre_filtered
+                hooks["preToolUse"] = pre_filtered
                 if not pre_filtered:
-                    del hooks["PreToolUse"]
+                    del hooks["preToolUse"]
                 changed = True
 
-            # Remove PostToolUse entries
-            post_tool_use = hooks.get("PostToolUse", [])
+            # Remove postToolUse entries
+            post_tool_use = hooks.get("postToolUse", [])
             post_filtered = [h for h in post_tool_use if not _is_elydora_hook(h, agent_id)]
             if len(post_filtered) != len(post_tool_use):
-                hooks["PostToolUse"] = post_filtered
+                hooks["postToolUse"] = post_filtered
                 if not post_filtered:
-                    del hooks["PostToolUse"]
+                    del hooks["postToolUse"]
                 changed = True
 
             if changed:
                 if not hooks:
                     del settings["hooks"]
-                _save_json(SETTINGS_PATH, settings)
+                _save_json(settings_path, settings)
 
         # Hook script removal is handled by cli.py cmd_uninstall (rmtree of agent dir)
-        print("Elydora hook uninstalled from Claude Code.")
+        print("Elydora hook uninstalled from Copilot CLI.")
 
     def status(self) -> PluginStatus:
         # Scan ~/.elydora/*/hook.py for any installed hook
@@ -150,11 +148,12 @@ class ClaudeCodePlugin(AgentPlugin):
         hook_exists = len(hook_files) > 0
 
         settings_configured = False
-        if os.path.exists(SETTINGS_PATH):
-            settings = _load_json(SETTINGS_PATH)
+        settings_path = _settings_path()
+        if os.path.exists(settings_path):
+            settings = _load_json(settings_path)
             hooks = settings.get("hooks", {})
-            pre_tool_use = hooks.get("PreToolUse", [])
-            post_tool_use = hooks.get("PostToolUse", [])
+            pre_tool_use = hooks.get("preToolUse", [])
+            post_tool_use = hooks.get("postToolUse", [])
             pre_configured = any(_is_elydora_hook(h) for h in pre_tool_use)
             post_configured = any(_is_elydora_hook(h) for h in post_tool_use)
             settings_configured = pre_configured and post_configured
@@ -163,33 +162,23 @@ class ClaudeCodePlugin(AgentPlugin):
         if installed:
             details = f"Found {len(hook_files)} agent(s): {', '.join(hook_files)}"
         elif hook_exists:
-            details = "Hook script exists but not configured in settings"
+            details = "Hook script exists but not configured in hooks.json"
         elif settings_configured:
-            details = "Configured in settings but hook script missing"
+            details = "Configured in hooks.json but hook script missing"
         else:
             details = "Not installed"
 
-        return PluginStatus(installed=installed, agent="claudecode", details=details)
+        return PluginStatus(installed=installed, agent="copilot", details=details)
 
 
-def _is_elydora_hook(entry: dict, agent_id: str = "") -> bool:
-    # Collect all command strings from the entry
-    commands = []
-    inner_hooks = entry.get("hooks")
-    if isinstance(inner_hooks, list):
-        commands.extend(
-            h.get("command", "")
-            for h in inner_hooks
-            if isinstance(h, dict)
-        )
-    else:
-        commands.append(entry.get("command", ""))
-
-    for cmd in commands:
-        cmd_lower = cmd.lower()
-        if "elydora" not in cmd_lower:
+def _is_elydora_hook(hook: dict, agent_id: str = "") -> bool:
+    # Check both bash and powershell fields for Copilot's hook format
+    for field in ("bash", "powershell", "command"):
+        cmd = hook.get(field, "")
+        if not isinstance(cmd, str):
             continue
-        # If agent_id is specified, only match hooks for that specific agent
+        if "elydora" not in cmd.lower():
+            continue
         if agent_id and agent_id in cmd:
             return True
         if not agent_id:

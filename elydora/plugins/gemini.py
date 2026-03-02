@@ -5,37 +5,71 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .hook_template import generate_hook_script
 
 
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".gemini", "settings.json")
-HOOK_DIR = os.path.join(os.path.expanduser("~"), ".elydora", "hooks")
-HOOK_FILENAME = "elydora-audit-hook-gemini.py"
+ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
 
 
 class GeminiPlugin(AgentPlugin):
     """Install/uninstall Elydora audit hook for Gemini CLI."""
 
-    def _hook_path(self) -> str:
-        return os.path.join(HOOK_DIR, HOOK_FILENAME)
+    @staticmethod
+    def _hook_path_for(agent_id: str) -> str:
+        return os.path.join(ELYDORA_DIR, agent_id, "hook.py")
 
     def install(self, config: InstallConfig) -> None:
+        agent_id = config.get("agent_id", "")
+        agent_name = config.get("agent_name", "")
+
+        # Create per-agent directory
+        agent_dir = os.path.join(ELYDORA_DIR, agent_id)
+        os.makedirs(agent_dir, exist_ok=True)
+
+        # Write config.json
+        config_data = {
+            "org_id": config.get("org_id", ""),
+            "agent_id": agent_id,
+            "kid": config.get("kid", ""),
+            "base_url": config.get("base_url", "https://api.elydora.com"),
+            "token": config.get("token", ""),
+            "agent_name": agent_name,
+        }
+        config_path = os.path.join(agent_dir, "config.json")
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=2)
+            f.write("\n")
+
+        # Write private key
+        private_key_path = os.path.join(agent_dir, "private.key")
+        with open(private_key_path, "w", encoding="utf-8") as f:
+            f.write(config.get("private_key", ""))
+        try:
+            os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR)
+        except Exception:
+            pass  # chmod may fail on Windows
+
         script = generate_hook_script(
             org_id=config.get("org_id", ""),
-            agent_id=config.get("agent_id", ""),
+            agent_id=agent_id,
             private_key=config.get("private_key", ""),
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
         )
-        os.makedirs(HOOK_DIR, exist_ok=True)
-        hook_path = self._hook_path()
+        hook_path = self._hook_path_for(agent_id)
         with open(hook_path, "w", encoding="utf-8") as f:
             f.write(script)
-        os.chmod(hook_path, stat.S_IRWXU)
+        try:
+            os.chmod(hook_path, stat.S_IRWXU)
+        except Exception:
+            pass  # chmod may fail on Windows
 
         guard_script_path = config.get("guard_script_path", "")
+        python_exe = sys.executable
 
         settings = _load_json(SETTINGS_PATH)
         hooks = settings.setdefault("hooks", {})
@@ -48,7 +82,7 @@ class GeminiPlugin(AgentPlugin):
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f"python3 {guard_script_path}",
+                        "command": f'"{python_exe}" {guard_script_path}',
                     }
                 ],
             })
@@ -72,7 +106,7 @@ class GeminiPlugin(AgentPlugin):
         print(f"  Hook script: {hook_path}")
         print(f"  Settings: {SETTINGS_PATH}")
 
-    def uninstall(self) -> None:
+    def uninstall(self, agent_id: str = "") -> None:
         if os.path.exists(SETTINGS_PATH):
             settings = _load_json(SETTINGS_PATH)
             hooks = settings.get("hooks", {})
@@ -80,7 +114,7 @@ class GeminiPlugin(AgentPlugin):
 
             # Remove BeforeTool entries
             before_tool = hooks.get("BeforeTool", [])
-            before_filtered = [h for h in before_tool if not _is_elydora_hook(h)]
+            before_filtered = [h for h in before_tool if not _is_elydora_hook(h, agent_id)]
             if len(before_filtered) != len(before_tool):
                 hooks["BeforeTool"] = before_filtered
                 if not before_filtered:
@@ -89,7 +123,7 @@ class GeminiPlugin(AgentPlugin):
 
             # Remove AfterTool entries
             after_tool = hooks.get("AfterTool", [])
-            after_filtered = [h for h in after_tool if not _is_elydora_hook(h)]
+            after_filtered = [h for h in after_tool if not _is_elydora_hook(h, agent_id)]
             if len(after_filtered) != len(after_tool):
                 hooks["AfterTool"] = after_filtered
                 if not after_filtered:
@@ -101,15 +135,15 @@ class GeminiPlugin(AgentPlugin):
                     del settings["hooks"]
                 _save_json(SETTINGS_PATH, settings)
 
-        hook_path = self._hook_path()
-        if os.path.exists(hook_path):
-            os.remove(hook_path)
-
+        # Hook script removal is handled by cli.py cmd_uninstall (rmtree of agent dir)
         print("Elydora hook uninstalled from Gemini CLI.")
 
     def status(self) -> PluginStatus:
-        hook_path = self._hook_path()
-        hook_exists = os.path.exists(hook_path)
+        # Scan ~/.elydora/*/hook.py for any installed hook
+        import glob as _glob
+        hook_pattern = os.path.join(ELYDORA_DIR, "*", "hook.py")
+        hook_files = _glob.glob(hook_pattern)
+        hook_exists = len(hook_files) > 0
 
         settings_configured = False
         if os.path.exists(SETTINGS_PATH):
@@ -123,7 +157,7 @@ class GeminiPlugin(AgentPlugin):
 
         installed = hook_exists and settings_configured
         if installed:
-            details = f"Hook: {hook_path}"
+            details = f"Found {len(hook_files)} agent(s): {', '.join(hook_files)}"
         elif hook_exists:
             details = "Hook script exists but not configured in settings"
         elif settings_configured:
@@ -134,16 +168,29 @@ class GeminiPlugin(AgentPlugin):
         return PluginStatus(installed=installed, agent="gemini", details=details)
 
 
-def _is_elydora_hook(entry: dict) -> bool:
+def _is_elydora_hook(entry: dict, agent_id: str = "") -> bool:
+    # Collect all command strings from the entry
+    commands = []
     inner_hooks = entry.get("hooks")
     if isinstance(inner_hooks, list):
-        return any(
-            "elydora" in h.get("command", "").lower()
+        commands.extend(
+            h.get("command", "")
             for h in inner_hooks
             if isinstance(h, dict)
         )
-    cmd = entry.get("command", "")
-    return "elydora" in cmd.lower()
+    else:
+        commands.append(entry.get("command", ""))
+
+    for cmd in commands:
+        cmd_lower = cmd.lower()
+        if "elydora" not in cmd_lower:
+            continue
+        # If agent_id is specified, only match hooks for that specific agent
+        if agent_id and agent_id in cmd:
+            return True
+        if not agent_id:
+            return True
+    return False
 
 
 def _load_json(path: str) -> dict:

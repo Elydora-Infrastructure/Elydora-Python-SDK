@@ -5,37 +5,71 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .hook_template import generate_hook_script
 
 
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".cursor", "hooks.json")
-HOOK_DIR = os.path.join(os.path.expanduser("~"), ".elydora", "hooks")
-HOOK_FILENAME = "elydora-audit-hook-cursor.py"
+ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
 
 
 class CursorPlugin(AgentPlugin):
     """Install/uninstall Elydora audit hook for Cursor."""
 
-    def _hook_path(self) -> str:
-        return os.path.join(HOOK_DIR, HOOK_FILENAME)
+    @staticmethod
+    def _hook_path_for(agent_id: str) -> str:
+        return os.path.join(ELYDORA_DIR, agent_id, "hook.py")
 
     def install(self, config: InstallConfig) -> None:
+        agent_id = config.get("agent_id", "")
+        agent_name = config.get("agent_name", "")
+
+        # Create per-agent directory
+        agent_dir = os.path.join(ELYDORA_DIR, agent_id)
+        os.makedirs(agent_dir, exist_ok=True)
+
+        # Write config.json
+        config_data = {
+            "org_id": config.get("org_id", ""),
+            "agent_id": agent_id,
+            "kid": config.get("kid", ""),
+            "base_url": config.get("base_url", "https://api.elydora.com"),
+            "token": config.get("token", ""),
+            "agent_name": agent_name,
+        }
+        config_path = os.path.join(agent_dir, "config.json")
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=2)
+            f.write("\n")
+
+        # Write private key
+        private_key_path = os.path.join(agent_dir, "private.key")
+        with open(private_key_path, "w", encoding="utf-8") as f:
+            f.write(config.get("private_key", ""))
+        try:
+            os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR)
+        except Exception:
+            pass  # chmod may fail on Windows
+
         script = generate_hook_script(
             org_id=config.get("org_id", ""),
-            agent_id=config.get("agent_id", ""),
+            agent_id=agent_id,
             private_key=config.get("private_key", ""),
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
         )
-        os.makedirs(HOOK_DIR, exist_ok=True)
-        hook_path = self._hook_path()
+        hook_path = self._hook_path_for(agent_id)
         with open(hook_path, "w", encoding="utf-8") as f:
             f.write(script)
-        os.chmod(hook_path, stat.S_IRWXU)
+        try:
+            os.chmod(hook_path, stat.S_IRWXU)
+        except Exception:
+            pass  # chmod may fail on Windows
 
         guard_script_path = config.get("guard_script_path", "")
+        python_exe = sys.executable
 
         settings = _load_json(SETTINGS_PATH)
         hooks = settings.setdefault("hooks", {})
@@ -45,7 +79,7 @@ class CursorPlugin(AgentPlugin):
         pre_tool_use[:] = [h for h in pre_tool_use if not _is_elydora_hook(h)]
         if guard_script_path:
             pre_tool_use.append({
-                "command": f"python3 {guard_script_path}",
+                "command": f'"{python_exe}" {guard_script_path}',
             })
 
         # --- postToolUse (audit logging, camelCase) ---
@@ -62,7 +96,7 @@ class CursorPlugin(AgentPlugin):
         print(f"  Hook script: {hook_path}")
         print(f"  Settings: {SETTINGS_PATH}")
 
-    def uninstall(self) -> None:
+    def uninstall(self, agent_id: str = "") -> None:
         if os.path.exists(SETTINGS_PATH):
             settings = _load_json(SETTINGS_PATH)
             hooks = settings.get("hooks", {})
@@ -70,7 +104,7 @@ class CursorPlugin(AgentPlugin):
 
             # Remove preToolUse entries
             pre_tool_use = hooks.get("preToolUse", [])
-            pre_filtered = [h for h in pre_tool_use if not _is_elydora_hook(h)]
+            pre_filtered = [h for h in pre_tool_use if not _is_elydora_hook(h, agent_id)]
             if len(pre_filtered) != len(pre_tool_use):
                 hooks["preToolUse"] = pre_filtered
                 if not pre_filtered:
@@ -79,7 +113,7 @@ class CursorPlugin(AgentPlugin):
 
             # Remove postToolUse entries
             post_tool_use = hooks.get("postToolUse", [])
-            post_filtered = [h for h in post_tool_use if not _is_elydora_hook(h)]
+            post_filtered = [h for h in post_tool_use if not _is_elydora_hook(h, agent_id)]
             if len(post_filtered) != len(post_tool_use):
                 hooks["postToolUse"] = post_filtered
                 if not post_filtered:
@@ -91,15 +125,15 @@ class CursorPlugin(AgentPlugin):
                     del settings["hooks"]
                 _save_json(SETTINGS_PATH, settings)
 
-        hook_path = self._hook_path()
-        if os.path.exists(hook_path):
-            os.remove(hook_path)
-
+        # Hook script removal is handled by cli.py cmd_uninstall (rmtree of agent dir)
         print("Elydora hook uninstalled from Cursor.")
 
     def status(self) -> PluginStatus:
-        hook_path = self._hook_path()
-        hook_exists = os.path.exists(hook_path)
+        # Scan ~/.elydora/*/hook.py for any installed hook
+        import glob as _glob
+        hook_pattern = os.path.join(ELYDORA_DIR, "*", "hook.py")
+        hook_files = _glob.glob(hook_pattern)
+        hook_exists = len(hook_files) > 0
 
         settings_configured = False
         if os.path.exists(SETTINGS_PATH):
@@ -113,7 +147,7 @@ class CursorPlugin(AgentPlugin):
 
         installed = hook_exists and settings_configured
         if installed:
-            details = f"Hook: {hook_path}"
+            details = f"Found {len(hook_files)} agent(s): {', '.join(hook_files)}"
         elif hook_exists:
             details = "Hook script exists but not configured in hooks.json"
         elif settings_configured:
@@ -124,9 +158,14 @@ class CursorPlugin(AgentPlugin):
         return PluginStatus(installed=installed, agent="cursor", details=details)
 
 
-def _is_elydora_hook(hook: dict) -> bool:
+def _is_elydora_hook(hook: dict, agent_id: str = "") -> bool:
     cmd = hook.get("command", "")
-    return "elydora" in cmd.lower()
+    if "elydora" not in cmd.lower():
+        return False
+    # If agent_id is specified, only match hooks for that specific agent
+    if agent_id:
+        return agent_id in cmd
+    return True
 
 
 def _load_json(path: str) -> dict:

@@ -87,10 +87,12 @@ elydora install \
 | Agent | Key |
 |-------|-----|
 | Claude Code | `claudecode` |
+| Copilot CLI | `copilot` |
 | Cursor | `cursor` |
 | Gemini CLI | `gemini` |
-| Augment Code | `augment` |
-| Kiro | `kiro` |
+| Kiro CLI | `kirocli` |
+| Kiro IDE | `kiroide` |
+| Letta Code | `letta` |
 | OpenCode | `opencode` |
 
 ## API Reference

@@ -11,6 +11,11 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
         "hook_event": "PostToolUse",
         "config_path": "~/.claude/settings.json",
     },
+    "copilot": {
+        "name": "Copilot CLI",
+        "hook_event": "PostToolUse",
+        "config_path": ".github/hooks/hooks.json",
+    },
     "cursor": {
         "name": "Cursor",
         "hook_event": "PostToolUse",
@@ -21,15 +26,20 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
         "hook_event": "AfterTool",
         "config_path": "~/.gemini/settings.json",
     },
-    "augment": {
-        "name": "Augment Code",
+    "kirocli": {
+        "name": "Kiro CLI",
         "hook_event": "PostToolUse",
-        "config_path": "~/.augment/settings.json",
+        "config_path": "~/.kiro/settings.json",
     },
-    "kiro": {
-        "name": "Kiro",
+    "kiroide": {
+        "name": "Kiro IDE",
         "hook_event": "PostToolUse",
         "config_path": "~/.kiro/hooks/",
+    },
+    "letta": {
+        "name": "Letta Code",
+        "hook_event": "PostToolUse",
+        "config_path": "~/.letta/settings.json",
     },
     "opencode": {
         "name": "OpenCode",
