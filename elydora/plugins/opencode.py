@@ -1,4 +1,4 @@
-"""OpenCode plugin — writes .opencode/plugins/elydora-audit.js (JS plugin)."""
+"""OpenCode plugin — writes ~/.config/opencode/plugins/elydora-audit.mjs (JS plugin)."""
 
 from __future__ import annotations
 
@@ -80,8 +80,10 @@ class OpenCodePlugin(AgentPlugin):
 
     def uninstall(self, agent_id: str = "") -> None:
         plugin_path = self._plugin_path()
-        if os.path.exists(plugin_path):
+        try:
             os.remove(plugin_path)
+        except FileNotFoundError:
+            pass
         # Hook script removal is handled by cli.py cmd_uninstall (rmtree of agent dir)
         print("Elydora hook uninstalled from OpenCode.")
 
@@ -298,5 +300,4 @@ module.exports = {{
 
 def _js_str(s: str) -> str:
     """Escape a Python string for embedding as a JS string literal."""
-    import json
     return json.dumps(s)

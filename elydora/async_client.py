@@ -73,7 +73,7 @@ class AsyncElydoraClient:
         self.token = token
 
         self._prev_chain_hash = GENESIS_CHAIN_HASH
-        self._kid = ""
+        self._kid = agent_id + '-key-1'
         self._session: Optional[aiohttp.ClientSession] = None
 
     def set_kid(self, kid: str) -> None:
@@ -118,7 +118,7 @@ class AsyncElydoraClient:
         session = await self._get_session()
 
         last_exc: Optional[Exception] = None
-        for attempt in range(self.max_retries):
+        for attempt in range(0, self.max_retries + 1):
             try:
                 async with session.request(
                     method, url, json=json_body, params=params, headers=hdrs, timeout=aiohttp.ClientTimeout(total=30)
@@ -128,7 +128,7 @@ class AsyncElydoraClient:
                 raise
             except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
                 last_exc = exc
-                if attempt < self.max_retries - 1:
+                if attempt < self.max_retries:
                     await asyncio.sleep(min(2 ** attempt, 8))
                     continue
                 raise
