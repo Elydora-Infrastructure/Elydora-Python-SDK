@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import asyncio
+import warnings
 from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
@@ -15,8 +16,10 @@ from .types import (
     AuthLoginResponse,
     AuthRegisterResponse,
     CreateExportResponse,
+    DeepHealthResponse,
     DeleteAgentResponse,
     EOR,
+    FreezeAgentResponse,
     GetAgentResponse,
     GetEpochResponse,
     GetExportResponse,
@@ -24,6 +27,9 @@ from .types import (
     GetOperationResponse,
     HealthResponse,
     IssueApiTokenResponse,
+    ListAdminEventsResponse,
+    ListMembersResponse,
+    ListWebhooksResponse,
     RotateApiTokenResponse,
     JWKSResponse,
     ListAgentsResponse,
@@ -31,7 +37,10 @@ from .types import (
     ListExportsResponse,
     RegisterAgentRequest,
     RegisterAgentResponse,
+    RegisterWebhookResponse,
     SubmitOperationResponse,
+    UnfreezeAgentResponse,
+    UpdateAgentResponse,
     VerifyOperationResponse,
 )
 from .utils import generate_nonce, generate_uuidv7
@@ -172,7 +181,16 @@ class AsyncElydoraClient:
         display_name: Optional[str] = None,
         org_name: Optional[str] = None,
     ) -> AuthRegisterResponse:
-        """Register a new user and organization."""
+        """Register a new user and organization.
+
+        .. deprecated::
+            Use Better Auth endpoints directly. See docs.
+        """
+        warnings.warn(
+            "AsyncElydoraClient.register() is deprecated. Use Better Auth endpoints directly. See docs.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         url = f"{base_url.rstrip('/')}/v1/auth/register"
         body: Dict[str, Any] = {"email": email, "password": password}
         if display_name is not None:
@@ -187,7 +205,16 @@ class AsyncElydoraClient:
 
     @staticmethod
     async def login(base_url: str, email: str, password: str) -> AuthLoginResponse:
-        """Authenticate and receive a session token."""
+        """Authenticate and receive a session token.
+
+        .. deprecated::
+            Use Better Auth endpoints directly. See docs.
+        """
+        warnings.warn(
+            "AsyncElydoraClient.login() is deprecated. Use Better Auth endpoints directly. See docs.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         url = f"{base_url.rstrip('/')}/v1/auth/login"
         body = {"email": email, "password": password}
         async with aiohttp.ClientSession() as session:
@@ -235,9 +262,13 @@ class AsyncElydoraClient:
         """List all agents for the organization."""
         return await self._request("GET", "/v1/agents")
 
-    async def unfreeze_agent(self, agent_id: str, reason: str) -> None:
+    async def unfreeze_agent(self, agent_id: str, reason: str) -> UnfreezeAgentResponse:
         """Unfreeze an agent."""
-        await self._request("POST", f"/v1/agents/{agent_id}/unfreeze", json_body={"reason": reason})
+        return await self._request("POST", f"/v1/agents/{agent_id}/unfreeze", json_body={"reason": reason})
+
+    async def update_agent(self, agent_id: str, integration_type: str) -> UpdateAgentResponse:
+        """Update an agent's integration type."""
+        return await self._request("PATCH", f"/v1/agents/{agent_id}", json_body={"integration_type": integration_type})
 
     async def delete_agent(self, agent_id: str) -> DeleteAgentResponse:
         """Delete an agent."""
@@ -400,6 +431,41 @@ class AsyncElydoraClient:
             return await resp.read()
 
     # -----------------------------------------------------------------
+    # Webhooks
+    # -----------------------------------------------------------------
+
+    async def list_webhooks(self) -> ListWebhooksResponse:
+        """List all webhooks for the organization."""
+        return await self._request("GET", "/v1/webhooks")
+
+    async def register_webhook(self, endpoint_url: str, events: list, secret: str) -> RegisterWebhookResponse:
+        """Register a new webhook."""
+        return await self._request("POST", "/v1/webhooks", json_body={"endpoint_url": endpoint_url, "events": events, "secret": secret})
+
+    async def delete_webhook(self, webhook_id: str) -> None:
+        """Delete a webhook."""
+        await self._request("DELETE", f"/v1/webhooks/{webhook_id}")
+
+    # -----------------------------------------------------------------
+    # Members
+    # -----------------------------------------------------------------
+
+    async def list_members(self) -> ListMembersResponse:
+        """List all members in the organization."""
+        return await self._request("GET", "/v1/members")
+
+    # -----------------------------------------------------------------
+    # Admin events
+    # -----------------------------------------------------------------
+
+    async def list_admin_events(self, limit: Optional[int] = None) -> ListAdminEventsResponse:
+        """List recent admin events."""
+        params: Dict[str, str] = {}
+        if limit is not None:
+            params["limit"] = str(limit)
+        return await self._request("GET", "/v1/admin/events", params=params)
+
+    # -----------------------------------------------------------------
     # JWKS
     # -----------------------------------------------------------------
 
@@ -417,6 +483,13 @@ class AsyncElydoraClient:
     async def health(self) -> HealthResponse:
         """Check API health (public, no auth required)."""
         url = f"{self.base_url}/v1/health"
+        session = await self._get_session()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            return await self._handle_response(resp)
+
+    async def deep_health(self) -> DeepHealthResponse:
+        """Check API deep health (public, no auth required)."""
+        url = f"{self.base_url}/v1/health/deep"
         session = await self._get_session()
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
             return await self._handle_response(resp)

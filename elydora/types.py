@@ -28,6 +28,28 @@ RbacRole = Literal[
     "readonly_investigator",
     "integration_engineer",
 ]
+IntegrationType = Literal[
+    "openai",
+    "anthropic",
+    "gemini",
+    "langchain",
+    "llamaindex",
+    "autogen",
+    "crewai",
+    "custom",
+]
+AdminAction = Literal[
+    "agent.freeze",
+    "agent.unfreeze",
+    "agent.revoke_key",
+    "agent.delete",
+    "member.invite",
+    "member.remove",
+    "member.role_change",
+    "webhook.register",
+    "webhook.delete",
+    "org.update",
+]
 ErrorCode = Literal[
     "INVALID_SIGNATURE",
     "UNKNOWN_AGENT",
@@ -56,6 +78,7 @@ class Agent(TypedDict):
     display_name: str
     responsible_entity: str
     status: AgentStatus
+    integration_type: str
     created_at: int
     updated_at: int
 
@@ -111,6 +134,8 @@ class Epoch(TypedDict):
 class Organization(TypedDict):
     org_id: str
     name: str
+    description: Optional[str]
+    ba_org_id: Optional[str]
     created_at: int
     updated_at: int
 
@@ -247,9 +272,16 @@ class AuditQueryResponse(TypedDict):
     total_count: int
 
 
+class EpochAnchor(TypedDict, total=False):
+    tsa_url: str
+    anchored_at: int
+    tsa_token: str
+    root_hash: str
+
+
 class GetEpochResponse(TypedDict, total=False):
     epoch: Epoch
-    anchor: Dict[str, Any]
+    anchor: EpochAnchor
 
 
 class ListEpochsResponse(TypedDict):
@@ -327,3 +359,102 @@ class HealthResponse(TypedDict):
     version: str
     protocol_version: str
     timestamp: int
+
+
+# ---------------------------------------------------------------------------
+# Additional entity types
+# ---------------------------------------------------------------------------
+
+
+class AdminEvent(TypedDict):
+    event_id: str
+    org_id: str
+    actor_user_id: str
+    action: str
+    target_type: str
+    target_id: str
+    metadata: Optional[Dict[str, Any]]
+    created_at: int
+
+
+class AgentAssignment(TypedDict):
+    assignment_id: str
+    agent_id: str
+    org_id: str
+    assigned_to: str
+    assigned_by: str
+    created_at: int
+
+
+class WebhookEntry(TypedDict):
+    webhook_id: str
+    org_id: str
+    endpoint_url: str
+    events: List[str]
+    created_at: int
+    updated_at: int
+
+
+class MemberEntry(TypedDict):
+    user_id: str
+    org_id: str
+    email: str
+    display_name: str
+    role: RbacRole
+    status: Literal["active", "suspended"]
+    created_at: int
+
+
+# ---------------------------------------------------------------------------
+# Additional request types
+# ---------------------------------------------------------------------------
+
+
+class UpdateAgentRequest(TypedDict, total=False):
+    integration_type: str
+
+
+# ---------------------------------------------------------------------------
+# Additional response types
+# ---------------------------------------------------------------------------
+
+
+class UpdateAgentResponse(TypedDict):
+    agent: Agent
+
+
+class FreezeAgentResponse(TypedDict):
+    agent_id: str
+    previous_status: AgentStatus
+    status: AgentStatus
+
+
+class UnfreezeAgentResponse(TypedDict):
+    agent_id: str
+    previous_status: AgentStatus
+    status: AgentStatus
+
+
+class ListWebhooksResponse(TypedDict):
+    webhooks: List[WebhookEntry]
+
+
+class RegisterWebhookResponse(TypedDict):
+    webhook: WebhookEntry
+
+
+class ListMembersResponse(TypedDict):
+    members: List[MemberEntry]
+
+
+class ListAdminEventsResponse(TypedDict):
+    events: List[AdminEvent]
+    cursor: Optional[str]
+
+
+class DeepHealthResponse(TypedDict, total=False):
+    status: str
+    version: str
+    protocol_version: str
+    timestamp: int
+    checks: Dict[str, Any]
