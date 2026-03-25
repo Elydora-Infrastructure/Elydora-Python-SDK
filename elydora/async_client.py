@@ -23,7 +23,8 @@ from .types import (
     GetMeResponse,
     GetOperationResponse,
     HealthResponse,
-    IssueTokenResponse,
+    IssueApiTokenResponse,
+    RotateApiTokenResponse,
     JWKSResponse,
     ListAgentsResponse,
     ListEpochsResponse,
@@ -199,12 +200,20 @@ class AsyncElydoraClient:
         """Get the current user's profile."""
         return await self._request("GET", "/v1/auth/me")
 
-    async def issue_token(self, ttl_seconds: Optional[int] = None) -> IssueTokenResponse:
+    async def issue_api_token(self, ttl_seconds: Optional[int] = None) -> IssueApiTokenResponse:
         """Issue an API token with an optional TTL."""
         body: Dict[str, Any] = {}
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
         return await self._request("POST", "/v1/auth/token", json_body=body)
+
+    async def issue_token(self, ttl_seconds: Optional[int] = None) -> IssueApiTokenResponse:
+        """Deprecated: Use issue_api_token() instead."""
+        return await self.issue_api_token(ttl_seconds=ttl_seconds)
+
+    async def rotate_api_token(self) -> RotateApiTokenResponse:
+        """Rotate the current API token and keep the old token in 24h grace."""
+        return await self._request("POST", "/v1/auth/rotate", json_body={})
 
     # -----------------------------------------------------------------
     # Agent management
@@ -300,7 +309,7 @@ class AsyncElydoraClient:
 
     async def verify_operation(self, operation_id: str) -> VerifyOperationResponse:
         """Verify an operation's integrity."""
-        return await self._request("POST", f"/v1/operations/{operation_id}/verify")
+        return await self._request("POST", f"/v1/operations/{operation_id}/verify", json_body={})
 
     # -----------------------------------------------------------------
     # Audit

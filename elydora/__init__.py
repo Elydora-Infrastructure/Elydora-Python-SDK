@@ -42,7 +42,10 @@ from .types import (
     AuthRegisterResponse,
     AuthLoginResponse,
     GetMeResponse,
+    IssueApiTokenResponse,
+    RotateApiTokenResponse,
     IssueTokenResponse,
+    RotateTokenResponse,
     HealthResponse,
 )
 
@@ -91,6 +94,9 @@ __all__ = [
     "AuthRegisterResponse",
     "AuthLoginResponse",
     "GetMeResponse",
+    "IssueApiTokenResponse",
+    "RotateApiTokenResponse",
     "IssueTokenResponse",
+    "RotateTokenResponse",
     "HealthResponse",
 ]

@@ -79,8 +79,8 @@ class Operation(TypedDict):
     issued_at: int
     ttl_ms: int
     nonce: str
-    subject: Dict[str, Any]
-    action: Dict[str, Any]
+    subject: str
+    action: str
     payload_hash: str
     prev_chain_hash: str
     chain_hash: str
@@ -305,9 +305,22 @@ class GetMeResponse(TypedDict):
     user: User
 
 
-class IssueTokenResponse(TypedDict):
+class IssueApiTokenResponse(TypedDict):
     token: str
     expires_at: Optional[int]
+    token_id: str
+
+
+class RotateApiTokenResponse(TypedDict):
+    token: str
+    expires_at: Optional[int]
+    token_id: str
+    previous_token_grace_until: int
+
+
+# Backward compatibility aliases (deprecated)
+IssueTokenResponse = IssueApiTokenResponse
+RotateTokenResponse = RotateApiTokenResponse
 
 
 class HealthResponse(TypedDict):
