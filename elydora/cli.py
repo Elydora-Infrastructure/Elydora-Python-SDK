@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--agent_id", required=True, help="Agent ID")
     install_parser.add_argument("--private_key", required=True, help="Base64url-encoded Ed25519 private key seed")
     install_parser.add_argument("--kid", required=True, help="Key ID")
-    install_parser.add_argument("--token", default="", help="JWT bearer token (optional)")
+    install_parser.add_argument("--token", default="", help="API token (from Console)")
     install_parser.add_argument("--base_url", default="https://api.elydora.com", help="API base URL")
 
     # uninstall

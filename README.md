@@ -48,7 +48,7 @@ async def main():
         org_id="org-123",
         agent_id="agent-456",
         private_key="<base64url-encoded-ed25519-seed>",
-        token="<jwt-token>",
+        token="<api-token>",
     )
 
     eor = client.create_operation(
@@ -107,7 +107,7 @@ client = ElydoraClient(
     base_url="https://...",     # API base URL (default: https://api.elydora.com)
     ttl_ms=30000,               # Operation TTL in ms (default: 30000)
     max_retries=3,              # Max retries on transient failures (default: 3)
-    token="<jwt>",              # Optional JWT bearer token
+    token="<api-token>",         # Optional API token
 )
 ```
 
@@ -117,7 +117,7 @@ client = ElydoraClient(
 # Register a new user and organization
 reg = ElydoraClient.register(base_url, email, password, display_name=None, org_name=None)
 
-# Login and receive a JWT
+# Login and receive a session token
 auth = ElydoraClient.login(base_url, email, password)
 
 # Get current authenticated user profile

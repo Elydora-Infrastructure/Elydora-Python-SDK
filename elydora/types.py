@@ -315,7 +315,6 @@ class RotateApiTokenResponse(TypedDict):
     token: str
     expires_at: Optional[int]
     token_id: str
-    previous_token_grace_until: int
 
 
 # Backward compatibility aliases (deprecated)

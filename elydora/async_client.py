@@ -51,7 +51,7 @@ class AsyncElydoraClient:
         base_url: API base URL.
         ttl_ms: Time-to-live for operations in milliseconds.
         max_retries: Maximum number of retries on transient failures.
-        token: Optional JWT bearer token for authenticated endpoints.
+        token: Optional API token for authenticated endpoints.
     """
 
     def __init__(
@@ -187,7 +187,7 @@ class AsyncElydoraClient:
 
     @staticmethod
     async def login(base_url: str, email: str, password: str) -> AuthLoginResponse:
-        """Authenticate and receive a JWT."""
+        """Authenticate and receive a session token."""
         url = f"{base_url.rstrip('/')}/v1/auth/login"
         body = {"email": email, "password": password}
         async with aiohttp.ClientSession() as session:
