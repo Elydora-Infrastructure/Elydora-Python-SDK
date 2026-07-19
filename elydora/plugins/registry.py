@@ -43,8 +43,8 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "opencode": {
         "name": "OpenCode",
-        "hook_event": "PostToolUse",
-        "config_path": "~/.opencode/plugins/",
+        "hook_event": "tool.execute.after",
+        "config_path": "~/.config/opencode/plugins/",
     },
 }
 
