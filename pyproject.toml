@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elydora"
-version = "1.2.1"
+dynamic = ["version"]
 description = "Python SDK for the Elydora tamper-evident audit platform"
 readme = "README.md"
 license = {text = "MIT"}
@@ -41,3 +41,6 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["elydora*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "elydora._version.__version__"}

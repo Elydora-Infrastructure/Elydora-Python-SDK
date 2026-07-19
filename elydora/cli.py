@@ -14,6 +14,7 @@ import shutil
 import sys
 from typing import Dict, Type
 
+from ._version import __version__
 from .crypto import get_public_key_base64url
 from .plugins.base import AgentPlugin, InstallConfig
 from .plugins.registry import SUPPORTED_AGENTS, get_agent_names
@@ -174,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Elydora — tamper-evident audit trail for AI agents",
     )
     parser.add_argument(
-        "--version", action="version", version="%(prog)s 1.0.0"
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
