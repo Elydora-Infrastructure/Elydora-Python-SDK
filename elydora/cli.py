@@ -32,6 +32,7 @@ from .plugins.kiroide import KiroIdePlugin
 from .plugins.kimi import KimiPlugin
 from .plugins.letta import LettaPlugin
 from .plugins.opencode import OpenCodePlugin
+from .plugins.qwen import QwenPlugin
 
 
 PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
@@ -49,6 +50,7 @@ PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
     "kimi": KimiPlugin,
     "letta": LettaPlugin,
     "opencode": OpenCodePlugin,
+    "qwen": QwenPlugin,
 }
 
 

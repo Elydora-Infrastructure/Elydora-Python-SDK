@@ -28,6 +28,7 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 - Validate Auggie matcher syntax during installation with Node.js `new RegExp`; keep status and uninstall independent from the JavaScript validator so recovery remains available offline.
 - Write Cline hooks only to `$CLINE_DIR/hooks` with `~/.cline/hooks` as the default; keep Documents and workspace hook roots read-only. Preserve official input byte-for-byte, resolve Python runtimes from their absolute shebangs, and translate guard exit code `2` into Cline's JSON stdout cancellation control.
 - Write Factory Droid hooks only to user-level `~/.factory/hooks.json`, its active legacy fallback, or the `hooks` object in `~/.factory/settings.json`; keep project and organization sources read-only. Preserve JSONC syntax, select sources per event, store direct event maps in hook files, keep settings hooks nested, validate JavaScript matchers before installation, use exact command ownership, and instruct users to review changes through `/hooks`.
+- Resolve Qwen Code user settings through explicit `QWEN_HOME`, `~/.qwen/.env`, then `~/.env`; keep workspace settings read-only. Preserve comments while rejecting trailing commas and duplicate keys, store hooks under the nested `hooks` object, treat `disableAllHooks` as unhealthy, validate JavaScript matchers before installation, use millisecond timeouts and explicit host shells, preserve PowerShell native exit codes, and instruct users to review changes through `/hooks`.
 
 ## Code Quality
 

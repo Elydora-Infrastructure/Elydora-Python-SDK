@@ -76,6 +76,11 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
         "hook_event": "tool.execute.after",
         "config_path": "~/.config/opencode/plugins/",
     },
+    "qwen": {
+        "name": "Qwen Code",
+        "hook_event": "PreToolUse/PostToolUse",
+        "config_path": "~/.qwen/settings.json",
+    },
 }
 
 

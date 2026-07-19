@@ -1,4 +1,4 @@
-"""Strict JSONC parsing and source-preserving edits for Factory Droid."""
+"""Strict JSON-with-comments parsing and source-preserving edits."""
 
 from __future__ import annotations
 
@@ -39,9 +39,15 @@ class JsoncNode:
 
 
 class _Parser:
-    def __init__(self, raw: str, label: str) -> None:
+    def __init__(
+        self,
+        raw: str,
+        label: str,
+        allow_trailing_commas: bool,
+    ) -> None:
         self.raw = raw
         self.label = label
+        self.allow_trailing_commas = allow_trailing_commas
         self.position = 0
 
     def _error(self, message: str, position: Optional[int] = None) -> ValueError:
@@ -131,6 +137,8 @@ class _Parser:
                     key, member_start, member_end, node, comma
                 ))
                 if self.position < len(self.raw) and self.raw[self.position] == "}":
+                    if not self.allow_trailing_commas:
+                        raise self._error("trailing commas are not allowed", comma)
                     self.position += 1
                     return JsoncNode(
                         "object", start, self.position, value, tuple(members)
@@ -162,6 +170,8 @@ class _Parser:
                 self._skip_trivia()
                 items.append(JsoncItem(node, comma))
                 if self.position < len(self.raw) and self.raw[self.position] == "]":
+                    if not self.allow_trailing_commas:
+                        raise self._error("trailing commas are not allowed", comma)
                     self.position += 1
                     return JsoncNode(
                         "array", start, self.position, values, items=tuple(items)
@@ -208,17 +218,29 @@ class _Parser:
         return node
 
 
-def parse_jsonc(raw: str, label: str) -> Any:
-    """Parse strict JSON plus comments and trailing commas."""
-    return _Parser(raw, label).parse().value
+def parse_jsonc(
+    raw: str,
+    label: str,
+    *,
+    allow_trailing_commas: bool = True,
+) -> Any:
+    """Parse JSON with comments and an explicit trailing-comma policy."""
+    return _Parser(raw, label, allow_trailing_commas).parse().value
 
 
 class JsoncEditor:
     """Apply narrow path edits while retaining untouched source bytes."""
 
-    def __init__(self, raw: str, label: str) -> None:
+    def __init__(
+        self,
+        raw: str,
+        label: str,
+        *,
+        allow_trailing_commas: bool = True,
+    ) -> None:
         self.raw = raw
         self.label = label
+        self.allow_trailing_commas = allow_trailing_commas
         self._refresh()
 
     @property
@@ -226,7 +248,11 @@ class JsoncEditor:
         return self.root.value
 
     def _refresh(self) -> None:
-        self.root = _Parser(self.raw, self.label).parse()
+        self.root = _Parser(
+            self.raw,
+            self.label,
+            self.allow_trailing_commas,
+        ).parse()
 
     def _resolve(self, path: Sequence[JsonPathPart]) -> JsoncNode:
         node = self.root
@@ -329,12 +355,12 @@ class JsoncEditor:
         pretty = "\n" in self.raw or "\r" in self.raw
         ranges: List[Tuple[int, int, str]] = []
         has_existing = bool(parent.members if parent.kind == "object" else parent.items)
+        previous_end: Optional[int] = None
         if has_existing and not had_trailing_comma:
             if parent.kind == "object":
                 previous_end = parent.members[-1].end
             else:
                 previous_end = parent.items[-1].node.end
-            ranges.append((previous_end, previous_end, ","))
         if pretty:
             close_line_start = self.raw.rfind("\n", 0, close) + 1
             close_prefix = self.raw[close_line_start:close]
@@ -359,6 +385,10 @@ class JsoncEditor:
             if had_trailing_comma:
                 content += ","
             insertion = (" " if has_existing else "") + content
+        if previous_end == insertion_at:
+            insertion = "," + insertion
+        elif previous_end is not None:
+            ranges.append((previous_end, previous_end, ","))
         ranges.append((insertion_at, insertion_at, insertion))
         self._apply(ranges)
 

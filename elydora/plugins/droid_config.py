@@ -13,7 +13,7 @@ from .droid_contract import (
     managed_removals,
     read_hook_settings,
 )
-from .droid_jsonc import JsonPathPart, JsoncEditor
+from ._jsonc import JsonPathPart, JsoncEditor
 
 
 OWNED_FILE_MARKER = "// Managed by Elydora"

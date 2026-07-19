@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 import pytest
 
 from elydora import cli
-from elydora.plugins import droid, droid_io, droid_jsonc
+from elydora.plugins import _jsonc, droid, droid_io
 from elydora.plugins.base import InstallConfig
 from elydora.plugins.registry import SUPPORTED_AGENTS
 
@@ -81,7 +81,7 @@ class DroidFixture:
 
 
 def _load(path: Path) -> JsonObject:
-    value = droid_jsonc.parse_jsonc(path.read_text(encoding="utf-8"), str(path))
+    value = _jsonc.parse_jsonc(path.read_text(encoding="utf-8"), str(path))
     assert isinstance(value, dict)
     return value
 

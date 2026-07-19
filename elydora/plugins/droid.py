@@ -6,6 +6,7 @@ import json
 import os
 from typing import List, Optional
 
+from ._transaction import FileChange, file_change, require_runtime, write_changes
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .droid_config import (
     additions_for,
@@ -25,14 +26,10 @@ from .droid_contract import (
     validate_javascript_regexes,
 )
 from .droid_io import (
-    FileChange,
     display_config_path,
-    file_change,
     read_sources,
     rendered_change,
-    require_runtime,
     runtime_files_exist,
-    write_changes,
 )
 from .hook_template import generate_hook_script
 
