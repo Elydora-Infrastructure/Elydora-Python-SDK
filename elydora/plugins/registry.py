@@ -28,8 +28,8 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "kirocli": {
         "name": "Kiro CLI",
-        "hook_event": "PostToolUse",
-        "config_path": "~/.kiro/settings.json",
+        "hook_event": "PreToolUse/PostToolUse",
+        "config_path": "~/.kiro/hooks/elydora-audit.json",
     },
     "kiroide": {
         "name": "Kiro IDE",
