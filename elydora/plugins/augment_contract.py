@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import os
-import re
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -241,12 +240,6 @@ def _validate_group(value: Any, event: str, group_index: int) -> JsonObject:
     if "matcher" in group:
         if not isinstance(matcher, str):
             raise ValueError(f"{label} matcher must be a string")
-        try:
-            re.compile(matcher)
-        except re.error as error:
-            raise ValueError(
-                f"{label} matcher must be a valid regular expression: {error}"
-            ) from error
     if "metadata" in group:
         _validate_metadata(group["metadata"], label)
     handlers = group.get("hooks")

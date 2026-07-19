@@ -159,7 +159,7 @@ def test_install_preserves_user_settings_and_is_idempotent(
             ],
             "PreToolUse": [
                 {
-                    "matcher": "launch-process",
+                    "matcher": "(?<tool>launch-process)",
                     "hooks": [
                         {
                             "type": "command",

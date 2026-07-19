@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess  # nosec B404
 from typing import List
 
 from ._file_io import (
@@ -17,6 +19,7 @@ from .augment_contract import (
     AGENT_KEY,
     AUDIT_SCRIPT,
     AugmentDocument,
+    AugmentHooks,
     JsonObject,
     RuntimeContract,
     build_handler,
@@ -30,6 +33,76 @@ from .augment_contract import (
 )
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .hook_template import generate_hook_script
+
+
+_REGEX_VALIDATION_TIMEOUT_SECONDS = 10
+_REGEX_VALIDATOR = """import fs from "node:fs";
+const pattern = fs.readFileSync(0, "utf8");
+try {
+  new RegExp(pattern);
+} catch (error) {
+  process.stderr.write(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+"""
+
+
+def _resolve_node_runtime() -> str:
+    node_path = shutil.which("node")
+    if node_path is None:
+        raise FileNotFoundError(
+            "Node.js runtime is required to validate Auggie matcher expressions"
+        )
+    return node_path
+
+
+def _validate_matcher(node_path: str, label: str, matcher: str) -> None:
+    try:
+        result = subprocess.run(  # nosec B603
+            [
+                node_path,
+                "--input-type=module",
+                "--eval",
+                _REGEX_VALIDATOR,
+            ],
+            input=matcher,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=_REGEX_VALIDATION_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError(
+            f"{label} matcher validation timed out after "
+            f"{_REGEX_VALIDATION_TIMEOUT_SECONDS} seconds"
+        ) from error
+    except OSError as error:
+        raise OSError(f"Run Node.js matcher validator: {error}") from error
+    if result.returncode == 0:
+        return
+    message = (
+        result.stderr.strip()
+        or result.stdout.strip()
+        or f"Node.js exited with code {result.returncode}"
+    )
+    raise ValueError(
+        f"{label} matcher must be a valid JavaScript regular expression: {message}"
+    )
+
+
+def _validate_matchers(hooks: AugmentHooks) -> None:
+    matchers = [
+        (event, group_index, group["matcher"])
+        for event in sorted(hooks)
+        for group_index, group in enumerate(hooks[event])
+        if "matcher" in group
+    ]
+    if not matchers:
+        return
+    node_path = _resolve_node_runtime()
+    for event, group_index, matcher in matchers:
+        label = f"Auggie settings group hooks.{event}[{group_index}]"
+        _validate_matcher(node_path, label, matcher)
 
 
 def _read_config() -> AugmentDocument:
@@ -102,6 +175,7 @@ class AugmentPlugin(AgentPlugin):
         if not agent_id:
             raise ValueError("agent_id is required")
         source = _read_config()
+        _validate_matchers(source.hooks)
         guard_path = config.get("guard_script_path", "")
         _require_runtime(guard_path, "Elydora guard runtime")
 
