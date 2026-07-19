@@ -67,3 +67,14 @@ def require_physical_directory(path: str) -> bool:
     if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
         raise OSError(f"Agent runtime path is not a physical directory: {path}")
     return True
+
+
+def require_physical_file(path: str) -> bool:
+    """Return whether a path is an existing physical regular file."""
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise OSError(f"Agent runtime config is not a physical file: {path}")
+    return True

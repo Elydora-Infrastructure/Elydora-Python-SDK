@@ -9,6 +9,7 @@ import pytest
 from elydora._runtime_paths import (
     ensure_private_directory,
     require_physical_directory,
+    require_physical_file,
     resolve_agent_directory,
 )
 from elydora import cli
@@ -64,6 +65,19 @@ def test_private_directory_rejects_symbolic_links(tmp_path: Path) -> None:
         ensure_private_directory(str(link))
     with pytest.raises(OSError, match="physical directory"):
         require_physical_directory(str(link))
+
+
+def test_runtime_config_rejects_symbolic_links(tmp_path: Path) -> None:
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    link = tmp_path / "config.json"
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"File symbolic links are unavailable: {error}")
+
+    with pytest.raises(OSError, match="physical file"):
+        require_physical_file(str(link))
 
 
 def test_install_rejects_unsafe_agent_id_before_writes(
@@ -124,5 +138,71 @@ def test_uninstall_validates_config_directory_before_plugin_changes(
 
     assert exc_info.value.code == 1
     assert "crosses its runtime directory" in capsys.readouterr().err
+    assert plugin_calls == []
+    assert runtime_dir.is_dir()
+
+
+def test_uninstall_requires_explicit_id_for_ambiguous_runtimes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    for agent_id in ("agent-1", "agent-2"):
+        runtime_dir = tmp_path / ".elydora" / agent_id
+        runtime_dir.mkdir(parents=True)
+        (runtime_dir / "config.json").write_text(
+            json.dumps({"agent_name": "opencode", "agent_id": agent_id}),
+            encoding="utf-8",
+        )
+    plugin_calls: list[str] = []
+
+    class Plugin:
+        def uninstall(self, agent_id: str = "") -> None:
+            plugin_calls.append(agent_id)
+
+    monkeypatch.setattr(cli, "_get_plugin", lambda _name: Plugin())
+    args = cli.build_parser().parse_args(["uninstall", "--agent", "opencode"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_uninstall(args)
+
+    assert exc_info.value.code == 1
+    assert "Multiple installed agents" in capsys.readouterr().err
+    assert plugin_calls == []
+    assert (tmp_path / ".elydora" / "agent-1").is_dir()
+    assert (tmp_path / ".elydora" / "agent-2").is_dir()
+
+
+def test_explicit_uninstall_validates_agent_ownership_before_plugin_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    runtime_dir = tmp_path / ".elydora" / "agent-1"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "config.json").write_text(
+        json.dumps({"agent_name": "codex", "agent_id": "agent-1"}),
+        encoding="utf-8",
+    )
+    plugin_calls: list[str] = []
+
+    class Plugin:
+        def uninstall(self, agent_id: str = "") -> None:
+            plugin_calls.append(agent_id)
+
+    monkeypatch.setattr(cli, "_get_plugin", lambda _name: Plugin())
+    args = cli.build_parser().parse_args(
+        ["uninstall", "--agent", "opencode", "--agent_id", "agent-1"]
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_uninstall(args)
+
+    assert exc_info.value.code == 1
+    assert "belongs to codex" in capsys.readouterr().err
     assert plugin_calls == []
     assert runtime_dir.is_dir()
