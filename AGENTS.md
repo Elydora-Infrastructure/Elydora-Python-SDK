@@ -27,6 +27,7 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 - Write Auggie hooks only to `~/.augment/settings.json`; keep system and workspace settings read-only. Generate `.cmd` wrappers on Windows and `.sh` wrappers on Unix because Auggie dispatches supported script paths, and express hook timeouts in milliseconds.
 - Validate Auggie matcher syntax during installation with Node.js `new RegExp`; keep status and uninstall independent from the JavaScript validator so recovery remains available offline.
 - Write Cline hooks only to `$CLINE_DIR/hooks` with `~/.cline/hooks` as the default; keep Documents and workspace hook roots read-only. Preserve official input byte-for-byte, resolve Python runtimes from their absolute shebangs, and translate guard exit code `2` into Cline's JSON stdout cancellation control.
+- Write Factory Droid hooks only to user-level `~/.factory/hooks.json`, its active legacy fallback, or the `hooks` object in `~/.factory/settings.json`; keep project and organization sources read-only. Preserve JSONC syntax, select sources per event, store direct event maps in hook files, keep settings hooks nested, validate JavaScript matchers before installation, use exact command ownership, and instruct users to review changes through `/hooks`.
 
 ## Code Quality
 

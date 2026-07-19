@@ -36,6 +36,11 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
         "hook_event": "PostToolUse",
         "config_path": "~/.cursor/hooks.json",
     },
+    "droid": {
+        "name": "Factory Droid",
+        "hook_event": "PreToolUse/PostToolUse",
+        "config_path": "~/.factory/hooks.json",
+    },
     "gemini": {
         "name": "Gemini CLI",
         "hook_event": "AfterTool",

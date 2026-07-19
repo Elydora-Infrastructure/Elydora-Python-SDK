@@ -83,6 +83,8 @@ Grok Build installation writes native global hooks to `$GROK_HOME/hooks/elydora-
 
 Auggie installation writes user-level hooks to `~/.augment/settings.json` and creates the `.cmd` or `.sh` wrappers required by its command runner. System and workspace settings remain unchanged. Sessions started with `--augment-cache-dir` load settings from that alternate directory.
 
+Factory Droid installation follows its active user source per event: `~/.factory/hooks.json`, the legacy `~/.factory/hooks/hooks.json` fallback, or hooks nested in `~/.factory/settings.json`. Elydora preserves JSONC comments and formatting, leaves project and organization hooks unchanged, and runs both managed commands with absolute Python and script paths. Run `/hooks` after installation to review the changes.
+
 Kiro CLI installation covers both runtime contracts. Kiro CLI v2 uses the generated custom agent through `kiro-cli --agent elydora-audit`. Kiro CLI v3 loads the global standalone hooks when started with `kiro-cli --v3`.
 
 ### Commands
@@ -106,6 +108,7 @@ Kiro CLI installation covers both runtime contracts. Kiro CLI v2 uses the genera
 | Grok Build | `grok` |
 | Copilot CLI | `copilot` |
 | Cursor | `cursor` |
+| Factory Droid | `droid` |
 | Gemini CLI | `gemini` |
 | Kiro CLI | `kirocli` |
 | Kiro IDE | `kiroide` |

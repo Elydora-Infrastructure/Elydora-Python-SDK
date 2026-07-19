@@ -24,6 +24,7 @@ from .plugins.codex import CodexPlugin
 from .plugins.cline import ClinePlugin
 from .plugins.copilot import CopilotPlugin
 from .plugins.cursor import CursorPlugin
+from .plugins.droid import DroidPlugin
 from .plugins.gemini import GeminiPlugin
 from .plugins.grok import GrokPlugin
 from .plugins.kirocli import KiroCliPlugin
@@ -40,6 +41,7 @@ PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
     "cline": ClinePlugin,
     "copilot": CopilotPlugin,
     "cursor": CursorPlugin,
+    "droid": DroidPlugin,
     "gemini": GeminiPlugin,
     "grok": GrokPlugin,
     "kirocli": KiroCliPlugin,
