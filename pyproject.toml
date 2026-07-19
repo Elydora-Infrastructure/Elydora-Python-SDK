@@ -42,5 +42,8 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["elydora*"]
 
+[tool.setuptools.package-data]
+elydora = ["py.typed"]
+
 [tool.setuptools.dynamic]
 version = {attr = "elydora._version.__version__"}

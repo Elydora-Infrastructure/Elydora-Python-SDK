@@ -34,6 +34,7 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 ## Code Quality
 
 - Keep the package, distribution, and CLI version in `elydora/_version.py`; build metadata must read that literal through Setuptools dynamic metadata.
+- Ship `elydora/py.typed` in every wheel and verify public annotations from an installed-wheel consumer.
 - Support every Python version declared in `pyproject.toml`.
 - Keep production source files at or below 500 lines.
 - Keep functions focused on one ownership boundary.
