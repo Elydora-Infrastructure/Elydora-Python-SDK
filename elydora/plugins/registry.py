@@ -6,6 +6,11 @@ from typing import Dict
 
 
 SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
+    "augment": {
+        "name": "Augment Code CLI",
+        "hook_event": "PreToolUse/PostToolUse",
+        "config_path": "~/.augment/settings.json",
+    },
     "claudecode": {
         "name": "Claude Code",
         "hook_event": "PostToolUse",

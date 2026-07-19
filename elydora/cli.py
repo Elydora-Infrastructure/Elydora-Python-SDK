@@ -18,6 +18,7 @@ from .crypto import get_public_key_base64url
 from .plugins.base import AgentPlugin, InstallConfig
 from .plugins.registry import SUPPORTED_AGENTS, get_agent_names
 from .plugins.hook_template import generate_guard_script
+from .plugins.augment import AugmentPlugin
 from .plugins.claudecode import ClaudeCodePlugin
 from .plugins.codex import CodexPlugin
 from .plugins.copilot import CopilotPlugin
@@ -32,6 +33,7 @@ from .plugins.opencode import OpenCodePlugin
 
 
 PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
+    "augment": AugmentPlugin,
     "claudecode": ClaudeCodePlugin,
     "codex": CodexPlugin,
     "copilot": CopilotPlugin,

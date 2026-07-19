@@ -79,6 +79,8 @@ Kimi installation writes the strict hook contract to each detected runtime: Kimi
 
 Grok Build installation writes native global hooks to `$GROK_HOME/hooks/elydora-audit.json` (default `~/.grok/hooks/elydora-audit.json`). Project hooks still follow Grok's `/hooks-trust` workflow; Elydora leaves project, Claude Code, and Cursor compatibility files unchanged.
 
+Auggie installation writes user-level hooks to `~/.augment/settings.json` and creates the `.cmd` or `.sh` wrappers required by its command runner. System and workspace settings remain unchanged. Sessions started with `--augment-cache-dir` load settings from that alternate directory.
+
 Kiro CLI installation covers both runtime contracts. Kiro CLI v2 uses the generated custom agent through `kiro-cli --agent elydora-audit`. Kiro CLI v3 loads the global standalone hooks when started with `kiro-cli --v3`.
 
 ### Commands
@@ -94,6 +96,7 @@ Kiro CLI installation covers both runtime contracts. Kiro CLI v2 uses the genera
 
 | Agent | Key |
 |-------|-----|
+| Augment Code CLI | `augment` |
 | Claude Code | `claudecode` |
 | OpenAI Codex | `codex` |
 | Kimi Code | `kimi` |
