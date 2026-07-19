@@ -8,6 +8,7 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 
 - Verify every agent hook contract against current official provider documentation before changing an adapter.
 - Treat `../Elydora-Open-Source/integrations/catalog.json` as the cross-product provider inventory.
+- Keep the exported `INTEGRATION_TYPES` tuple aligned with that inventory, and require `integration_type` in every agent registration request.
 - Keep adapter delivery claims aligned with executable tests in this repository.
 - Synchronize completed provider behavior into the Node SDK, Go SDK, Open Source distribution, Console, Docs, and landing page through separate reviewed commits.
 

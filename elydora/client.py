@@ -10,6 +10,7 @@ import requests
 
 from .crypto import compute_chain_hash, compute_payload_hash, sign_eor
 from .errors import ElydoraError
+from .integration_types import require_integration_type
 from .types import (
     AuditQueryResponse,
     AuthLoginResponse,
@@ -26,6 +27,7 @@ from .types import (
     GetOperationResponse,
     HealthResponse,
     IssueApiTokenResponse,
+    IntegrationType,
     ListAdminEventsResponse,
     ListMembersResponse,
     ListWebhooksResponse,
@@ -239,6 +241,7 @@ class ElydoraClient:
 
     def register_agent(self, request: RegisterAgentRequest) -> RegisterAgentResponse:
         """Register a new agent with the organization."""
+        require_integration_type(request.get("integration_type"))
         return self._request("POST", "/v1/agents/register", json_body=request)
 
     def get_agent(self, agent_id: str) -> GetAgentResponse:
@@ -257,8 +260,9 @@ class ElydoraClient:
         """Unfreeze an agent."""
         return self._request("POST", f"/v1/agents/{agent_id}/unfreeze", json_body={"reason": reason})
 
-    def update_agent(self, agent_id: str, integration_type: str) -> UpdateAgentResponse:
+    def update_agent(self, agent_id: str, integration_type: IntegrationType) -> UpdateAgentResponse:
         """Update an agent's integration type."""
+        require_integration_type(integration_type)
         return self._request("PATCH", f"/v1/agents/{agent_id}", json_body={"integration_type": integration_type})
 
     def delete_agent(self, agent_id: str) -> DeleteAgentResponse:

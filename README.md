@@ -177,6 +177,7 @@ result = client.verify_operation(operation_id)
 # Register a new agent
 agent = client.register_agent({
     "agent_id": "my-agent",
+    "integration_type": "codex",
     "display_name": "My Agent",
     "responsible_entity": "team@example.com",
     "keys": [{"kid": "key-v1", "public_key": "<base64url>", "algorithm": "ed25519"}],
