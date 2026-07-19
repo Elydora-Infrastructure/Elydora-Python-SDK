@@ -31,6 +31,11 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
         "hook_event": "AfterTool",
         "config_path": "~/.gemini/settings.json",
     },
+    "grok": {
+        "name": "Grok Build",
+        "hook_event": "PreToolUse/PostToolUse",
+        "config_path": "~/.grok/hooks/elydora-audit.json",
+    },
     "kirocli": {
         "name": "Kiro CLI",
         "hook_event": "PreToolUse/PostToolUse",

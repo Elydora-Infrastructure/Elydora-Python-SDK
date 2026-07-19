@@ -23,6 +23,7 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 - Report installation as healthy only when a complete hook contract references both generated runtime scripts and both scripts exist.
 - Model stable, legacy, and early-access hook generations as explicit contracts. Keep their activation requirements visible in CLI output and README guidance.
 - Select Kimi Code and legacy kimi-cli config targets from existing runtime evidence; a fresh installation targets current Kimi Code and keeps migration markers isolated to active runtimes.
+- Keep Grok Build writes inside its native global `$GROK_HOME/hooks/*.json` contract. Treat Claude Code and Cursor compatibility files plus project `.grok/hooks` as read-only integration sources.
 
 ## Code Quality
 

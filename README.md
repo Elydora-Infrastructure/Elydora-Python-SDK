@@ -77,6 +77,8 @@ Codex performs a one-time trust review for user hooks. Run `/hooks` in Codex aft
 
 Kimi installation writes the strict hook contract to each detected runtime: Kimi Code's `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`) and the migrating Python CLI's `~/.kimi/config.toml`. A fresh installation targets current Kimi Code, avoiding cross-runtime migration markers. Both runtimes load the hooks globally; run `/hooks` to inspect them.
 
+Grok Build installation writes native global hooks to `$GROK_HOME/hooks/elydora-audit.json` (default `~/.grok/hooks/elydora-audit.json`). Project hooks still follow Grok's `/hooks-trust` workflow; Elydora leaves project, Claude Code, and Cursor compatibility files unchanged.
+
 Kiro CLI installation covers both runtime contracts. Kiro CLI v2 uses the generated custom agent through `kiro-cli --agent elydora-audit`. Kiro CLI v3 loads the global standalone hooks when started with `kiro-cli --v3`.
 
 ### Commands
@@ -95,6 +97,7 @@ Kiro CLI installation covers both runtime contracts. Kiro CLI v2 uses the genera
 | Claude Code | `claudecode` |
 | OpenAI Codex | `codex` |
 | Kimi Code | `kimi` |
+| Grok Build | `grok` |
 | Copilot CLI | `copilot` |
 | Cursor | `cursor` |
 | Gemini CLI | `gemini` |
