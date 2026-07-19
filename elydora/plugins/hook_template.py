@@ -297,7 +297,7 @@ def generate_guard_script(agent_name: str, agent_id: str) -> str:
       1. Reads agent config from ~/.elydora/{agent_id}/config.json
       2. Checks cached status from ~/.elydora/{agent_id}/status-cache.json (60s TTL)
       3. If cache is stale, fetches agent status from GET {base_url}/v1/agents/{agent_id}
-      4. If status is "frozen", writes error to stderr and exits with code 1 (blocks tool)
+      4. If status is "frozen", writes error to stderr and exits with blocking code 2
       5. Fail-open: if API unreachable or config missing, exits 0 (allow)
       6. Uses only stdlib — no external deps
     """
@@ -343,7 +343,7 @@ def main():
                 sys.stderr.write(
                     'Agent "' + AGENT_NAME + '" is frozen by Elydora. Tool execution blocked.\\n'
                 )
-                sys.exit(1)
+                sys.exit(2)
             return  # Cache is fresh — use cached result
     except Exception:
         pass  # No cache or invalid — need to check API
@@ -381,7 +381,7 @@ def main():
             sys.stderr.write(
                 'Agent "' + AGENT_NAME + '" is frozen by Elydora. Tool execution blocked.\\n'
             )
-            sys.exit(1)
+            sys.exit(2)
     except SystemExit:
         raise  # Re-raise sys.exit
     except Exception:
