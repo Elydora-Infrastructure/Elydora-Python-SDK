@@ -341,7 +341,7 @@ def test_install_replaces_stale_handlers_for_every_agent(
     assert len(current["hooks"]["PostToolUse"]) == 1
 
 
-def test_uninstall_preserves_untouched_empty_native_event(
+def test_uninstall_preserves_untouched_empty_native_group(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     fixture = prepare_fixture(
@@ -349,13 +349,17 @@ def test_uninstall_preserves_untouched_empty_native_event(
     )
     fixture.plugin.install(fixture.config)
     settings = json.loads(fixture.config_path.read_text(encoding="utf-8"))
-    settings["hooks"]["PreToolUse"] = []
+    settings["hooks"]["PreToolUse"].insert(
+        0, {"hooks": [], "label": "keep empty group"}
+    )
     fixture.config_path.write_text(json.dumps(settings), encoding="utf-8")
 
     fixture.plugin.uninstall(AGENT_ID)
 
     remaining = json.loads(fixture.config_path.read_text(encoding="utf-8"))
-    assert remaining["hooks"]["PreToolUse"] == []
+    assert remaining["hooks"]["PreToolUse"] == [
+        {"hooks": [], "label": "keep empty group"}
+    ]
     assert "PostToolUse" not in remaining["hooks"]
 
 

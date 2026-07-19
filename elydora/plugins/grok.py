@@ -215,6 +215,7 @@ def _remove_managed(
             continue
         handlers = group["hooks"]
         kept: List[JsonObject] = []
+        group_changed = False
         for handler in handlers:
             managed_id = _managed_agent_id(handler, script_name)
             remove = managed_id is not None and (
@@ -222,10 +223,13 @@ def _remove_managed(
             )
             if remove:
                 changed = True
+                group_changed = True
             else:
                 kept.append(handler)
-        if kept:
-            result.append(group if len(kept) == len(handlers) else {**group, "hooks": kept})
+        if not group_changed:
+            result.append(group)
+        elif kept:
+            result.append({**group, "hooks": kept})
     return result, changed
 
 
