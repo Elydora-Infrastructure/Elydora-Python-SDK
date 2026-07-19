@@ -12,9 +12,14 @@ import json
 import os
 import shutil
 import sys
-from typing import Dict, Type
+from typing import Dict, NoReturn, Type
 
 from ._version import __version__
+from ._runtime_paths import (
+    ensure_private_directory,
+    require_physical_directory,
+    resolve_agent_directory,
+)
 from .crypto import get_public_key_base64url
 from .plugins.base import AgentPlugin, InstallConfig
 from .plugins.registry import SUPPORTED_AGENTS, get_agent_names
@@ -55,6 +60,33 @@ PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
 }
 
 
+def _runtime_root() -> str:
+    return os.path.join(os.path.expanduser("~"), ".elydora")
+
+
+def _exit_with_error(message: str) -> NoReturn:
+    print(f"Error: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _resolve_agent_directory_or_exit(agent_id: str) -> str:
+    try:
+        return resolve_agent_directory(_runtime_root(), agent_id)
+    except ValueError as error:
+        _exit_with_error(str(error))
+
+
+def _read_runtime_config_or_exit(config_path: str) -> dict:
+    try:
+        with open(config_path, "r", encoding="utf-8") as file:
+            config = json.load(file)
+    except (OSError, json.JSONDecodeError) as error:
+        _exit_with_error(f"Read agent config at {config_path}: {error}")
+    if not isinstance(config, dict):
+        _exit_with_error(f"Agent config at {config_path} must contain a JSON object")
+    return config
+
+
 def _get_plugin(agent_name: str) -> AgentPlugin:
     """Instantiate the plugin for the given agent name."""
     cls = PLUGIN_MAP.get(agent_name)
@@ -68,6 +100,7 @@ def _get_plugin(agent_name: str) -> AgentPlugin:
 def cmd_install(args: argparse.Namespace) -> None:
     """Handle the 'install' subcommand."""
     agent_name: str = args.agent
+    agent_dir = _resolve_agent_directory_or_exit(args.agent_id)
 
     # Derive public key to verify the private key is valid
     try:
@@ -79,8 +112,8 @@ def cmd_install(args: argparse.Namespace) -> None:
     print(f"Verified key pair (public key: {pub[:16]}...)")
 
     # Create per-agent directory under ~/.elydora/{agent_id}/
-    agent_dir = os.path.join(os.path.expanduser("~"), ".elydora", args.agent_id)
-    os.makedirs(agent_dir, exist_ok=True)
+    ensure_private_directory(_runtime_root())
+    ensure_private_directory(agent_dir)
 
     # Generate and write the guard script
     guard_script_path = os.path.join(agent_dir, "guard.py")
@@ -112,30 +145,48 @@ def cmd_install(args: argparse.Namespace) -> None:
 
 def cmd_uninstall(args: argparse.Namespace) -> None:
     """Handle the 'uninstall' subcommand."""
-    plugin = _get_plugin(args.agent)
-    agent_id = getattr(args, "agent_id", None) or ""
-    plugin.uninstall(agent_id=agent_id)
+    explicit_agent_id = getattr(args, "agent_id", None)
+    if explicit_agent_id:
+        _resolve_agent_directory_or_exit(explicit_agent_id)
 
     # Determine which agent directory to remove
-    elydora_dir = os.path.join(os.path.expanduser("~"), ".elydora")
-    agent_id = getattr(args, "agent_id", None)
+    elydora_dir = _runtime_root()
+    require_physical_directory(elydora_dir)
+    agent_id = explicit_agent_id
 
     if not agent_id:
         # Scan ~/.elydora/*/config.json for matching agent_name
         pattern = os.path.join(elydora_dir, "*", "config.json")
         for config_path in glob.glob(pattern):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                if cfg.get("agent_name") == args.agent:
-                    agent_id = cfg.get("agent_id")
-                    break
-            except Exception:
+            cfg = _read_runtime_config_or_exit(config_path)
+            if cfg.get("agent_name") != args.agent:
                 continue
+            stored_agent_id = cfg.get("agent_id")
+            if not isinstance(stored_agent_id, str):
+                _exit_with_error(
+                    f"Agent config at {config_path} has an invalid agent_id"
+                )
+            stored_directory = _resolve_agent_directory_or_exit(stored_agent_id)
+            if os.path.normcase(stored_directory) != os.path.normcase(
+                os.path.dirname(config_path)
+            ):
+                _exit_with_error(
+                    f"Agent config at {config_path} crosses its runtime directory"
+                )
+            agent_id = stored_agent_id
+            break
 
+    agent_dir = None
+    agent_directory_exists = False
     if agent_id:
-        agent_dir = os.path.join(elydora_dir, agent_id)
-        if os.path.isdir(agent_dir):
+        agent_dir = _resolve_agent_directory_or_exit(agent_id)
+        agent_directory_exists = require_physical_directory(agent_dir)
+
+    plugin = _get_plugin(args.agent)
+    plugin.uninstall(agent_id=agent_id or "")
+
+    if agent_dir:
+        if agent_directory_exists:
             shutil.rmtree(agent_dir)
             print(f"  Removed agent directory: {agent_dir}")
     else:

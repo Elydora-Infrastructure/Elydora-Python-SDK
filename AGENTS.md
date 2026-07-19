@@ -41,6 +41,7 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 - Propagate unexpected errors to the CLI boundary.
 - Use documented defaults only for genuinely optional configuration.
 - Avoid compatibility shims without a named public or user configuration contract.
+- Resolve every agent runtime directory as one physical child of `~/.elydora`; reject separators, traversal segments, cross-platform reserved names, and symbolic-link directories before writes or recursive removal.
 - Interpret `max_retries` as retries after the initial attempt and reject negative or non-integer values.
 - Automatically retry RFC-idempotent methods; retry non-idempotent methods only when the transport proves the request was never sent.
 - Honor valid `Retry-After` delay-seconds and HTTP-date values, and release retryable responses before sleeping.
