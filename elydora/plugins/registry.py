@@ -21,6 +21,11 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
         "hook_event": "PreToolUse/PostToolUse",
         "config_path": "~/.codex/hooks.json",
     },
+    "cline": {
+        "name": "Cline",
+        "hook_event": "PreToolUse/PostToolUse",
+        "config_path": "~/.cline/hooks/PreToolUse.mjs",
+    },
     "copilot": {
         "name": "Copilot CLI",
         "hook_event": "PostToolUse",

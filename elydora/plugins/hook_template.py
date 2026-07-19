@@ -206,9 +206,23 @@ def main():
         session_id = "unknown"
 
         if isinstance(event, dict):
-            tool_name = event.get("tool_name", event.get("toolName", event.get("name", "unknown")))
-            tool_input = event.get("tool_input", event.get("toolInput", event.get("input", {{}})))
-            session_id = event.get("session_id", event.get("sessionId", event.get("session", "unknown")))
+            cline_event = event.get("tool_result")
+            if not isinstance(cline_event, dict):
+                cline_event = event.get("tool_call")
+            if not isinstance(cline_event, dict):
+                cline_event = {{}}
+            tool_name = event.get(
+                "tool_name",
+                event.get("toolName", event.get("name", cline_event.get("name", "unknown"))),
+            )
+            tool_input = event.get(
+                "tool_input",
+                event.get("toolInput", event.get("input", cline_event.get("input", {{}}))),
+            )
+            session_id = event.get(
+                "session_id",
+                event.get("sessionId", event.get("session", event.get("taskId", "unknown"))),
+            )
 
         # Read chain state
         prev_chain_hash = read_chain_state()
