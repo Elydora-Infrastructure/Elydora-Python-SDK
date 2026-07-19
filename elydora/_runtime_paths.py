@@ -22,6 +22,7 @@ def resolve_agent_directory(root: str, agent_id: str) -> str:
         or "/" in agent_id
         or "\\" in agent_id
         or agent_id in {".", ".."}
+        or agent_id.startswith(" ")
         or agent_id.endswith((".", " "))
         or _WINDOWS_DEVICE_NAME.match(agent_id)
     ):

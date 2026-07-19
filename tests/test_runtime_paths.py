@@ -22,6 +22,7 @@ from elydora import cli
         "C:escape",
         "agent.",
         "agent ",
+        " agent",
         "CON",
         "COM¹.log",
         ".",
