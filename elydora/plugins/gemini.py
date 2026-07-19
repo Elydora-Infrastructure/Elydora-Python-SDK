@@ -170,16 +170,16 @@ class GeminiPlugin(AgentPlugin):
 
 def _is_elydora_hook(entry: dict, agent_id: str = "") -> bool:
     # Collect all command strings from the entry
-    commands = []
+    commands: list[str] = []
     inner_hooks = entry.get("hooks")
     if isinstance(inner_hooks, list):
-        commands.extend(
-            h.get("command", "")
-            for h in inner_hooks
-            if isinstance(h, dict)
-        )
+        for hook in inner_hooks:
+            if isinstance(hook, dict) and isinstance(hook.get("command"), str):
+                commands.append(hook["command"])
     else:
-        commands.append(entry.get("command", ""))
+        command = entry.get("command")
+        if isinstance(command, str):
+            commands.append(command)
 
     for cmd in commands:
         cmd_lower = cmd.lower()
