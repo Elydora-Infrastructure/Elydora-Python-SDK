@@ -9,7 +9,7 @@ import shlex
 # subprocess provides argument quoting only; this module starts no process.
 import subprocess  # nosec B404
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ._file_io import (
     read_json as _read_json,
@@ -362,7 +362,6 @@ class GrokPlugin(AgentPlugin):
         audit_script = generate_hook_script(
             org_id=config.get("org_id", ""),
             agent_id=agent_id,
-            private_key=config.get("private_key", ""),
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
         )

@@ -65,7 +65,6 @@ class ClinePlugin(AgentPlugin):
         audit_script = generate_hook_script(
             org_id=config.get("org_id", ""),
             agent_id=agent_id,
-            private_key=config.get("private_key", ""),
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
         )

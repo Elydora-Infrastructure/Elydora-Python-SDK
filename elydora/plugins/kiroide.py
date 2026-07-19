@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import sys
 
+from ._file_io import write_json_atomic, write_text_atomic
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .hook_template import generate_hook_script
 
@@ -44,34 +44,36 @@ class KiroIdePlugin(AgentPlugin):
             "agent_name": agent_name,
         }
         config_path = os.path.join(agent_dir, "config.json")
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=2)
-            f.write("\n")
+        write_json_atomic(
+            config_path,
+            config_data,
+            0o600,
+            "Elydora runtime config",
+        )
 
         # Write private key
         private_key_path = os.path.join(agent_dir, "private.key")
-        with open(private_key_path, "w", encoding="utf-8") as f:
-            f.write(config.get("private_key", ""))
-        try:
-            os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR)
-        except Exception:
-            pass  # chmod may fail on Windows
+        write_text_atomic(
+            private_key_path,
+            config.get("private_key", ""),
+            0o600,
+            "Elydora private key",
+        )
 
         # Write the Python hook script
         script = generate_hook_script(
             org_id=config.get("org_id", ""),
             agent_id=agent_id,
-            private_key=config.get("private_key", ""),
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
         )
         script_path = self._hook_path_for(agent_id)
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(script)
-        try:
-            os.chmod(script_path, stat.S_IRWXU)
-        except Exception:
-            pass  # chmod may fail on Windows
+        write_text_atomic(
+            script_path,
+            script,
+            0o700,
+            "Elydora audit runtime",
+        )
 
         guard_script_path = config.get("guard_script_path", "")
         python_exe = sys.executable
@@ -93,13 +95,15 @@ class KiroIdePlugin(AgentPlugin):
             },
         }
 
-        os.makedirs(KIRO_HOOK_DIR, exist_ok=True)
         hook_path = self._kiro_hook_path()
-        with open(hook_path, "w", encoding="utf-8") as f:
-            json.dump(hook_config, f, indent=2)
-            f.write("\n")
+        write_json_atomic(
+            hook_path,
+            hook_config,
+            0o600,
+            "Kiro IDE hook definition",
+        )
 
-        print(f"Elydora hook installed for Kiro IDE.")
+        print("Elydora hook installed for Kiro IDE.")
         print(f"  Hook script: {script_path}")
         print(f"  Hook definition: {hook_path}")
 

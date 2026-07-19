@@ -96,7 +96,7 @@ def test_install_rejects_unsafe_agent_id_before_writes(
             "org-1",
             "--agent_id",
             "../escape",
-            "--private_key",
+            "--private_key_file",
             "unused",
             "--kid",
             "key-1",

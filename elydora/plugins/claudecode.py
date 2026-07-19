@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import sys
 
+from ._file_io import write_json_atomic, write_text_atomic
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .hook_template import generate_hook_script
 
@@ -40,34 +40,36 @@ class ClaudeCodePlugin(AgentPlugin):
             "agent_name": agent_name,
         }
         config_path = os.path.join(agent_dir, "config.json")
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=2)
-            f.write("\n")
+        write_json_atomic(
+            config_path,
+            config_data,
+            0o600,
+            "Elydora runtime config",
+        )
 
         # Write private key
         private_key_path = os.path.join(agent_dir, "private.key")
-        with open(private_key_path, "w", encoding="utf-8") as f:
-            f.write(config.get("private_key", ""))
-        try:
-            os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR)
-        except Exception:
-            pass  # chmod may fail on Windows
+        write_text_atomic(
+            private_key_path,
+            config.get("private_key", ""),
+            0o600,
+            "Elydora private key",
+        )
 
         # Write the hook script
         script = generate_hook_script(
             org_id=config.get("org_id", ""),
             agent_id=agent_id,
-            private_key=config.get("private_key", ""),
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
         )
         hook_path = self._hook_path_for(agent_id)
-        with open(hook_path, "w", encoding="utf-8") as f:
-            f.write(script)
-        try:
-            os.chmod(hook_path, stat.S_IRWXU)
-        except Exception:
-            pass  # chmod may fail on Windows
+        write_text_atomic(
+            hook_path,
+            script,
+            0o700,
+            "Elydora audit runtime",
+        )
 
         guard_script_path = config.get("guard_script_path", "")
         python_exe = sys.executable
@@ -105,7 +107,7 @@ class ClaudeCodePlugin(AgentPlugin):
         })
 
         _save_json(SETTINGS_PATH, settings)
-        print(f"Elydora hook installed for Claude Code.")
+        print("Elydora hook installed for Claude Code.")
         print(f"  Hook script: {hook_path}")
         print(f"  Settings: {SETTINGS_PATH}")
 
@@ -205,7 +207,4 @@ def _load_json(path: str) -> dict:
 
 
 def _save_json(path: str, data: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
+    write_json_atomic(path, data, 0o600, "Claude Code settings")

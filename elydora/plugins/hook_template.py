@@ -14,7 +14,6 @@ def generate_hook_script(
     *,
     org_id: str,
     agent_id: str,
-    private_key: str,
     kid: str,
     base_url: str,
 ) -> str:
@@ -38,6 +37,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import struct
 import sys
 import time
@@ -47,14 +47,15 @@ import time
 # ---------------------------------------------------------------------------
 ORG_ID = {org_id!r}
 AGENT_ID = {agent_id!r}
-PRIVATE_KEY = {private_key!r}
 KID = {kid!r}
 BASE_URL = {base_url!r}
 
 ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
+PRIVATE_KEY_PATH = os.path.join(ELYDORA_DIR, AGENT_ID, "private.key")
 CHAIN_STATE_PATH = os.path.join(ELYDORA_DIR, AGENT_ID, "chain-state.json")
 ERROR_LOG_PATH = os.path.join(ELYDORA_DIR, AGENT_ID, "error.log")
 ZERO_CHAIN_HASH = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+MAX_PRIVATE_KEY_BYTES = 64 * 1024
 
 # ---------------------------------------------------------------------------
 # Base64url helpers
@@ -133,6 +134,45 @@ def sign_ed25519(private_key_b64url, data):
     seed = base64url_decode(private_key_b64url)
     key = Ed25519PrivateKey.from_private_bytes(seed)
     return base64url_encode(key.sign(data))
+
+def read_private_key():
+    before = os.lstat(PRIVATE_KEY_PATH)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("Private key path is not a regular file: " + PRIVATE_KEY_PATH)
+    if before.st_size > MAX_PRIVATE_KEY_BYTES:
+        raise ValueError("Private key file exceeds the size limit: " + PRIVATE_KEY_PATH)
+    if os.name != "nt" and before.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise PermissionError("Private key file permissions are too broad: " + PRIVATE_KEY_PATH)
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(PRIVATE_KEY_PATH, flags)
+    try:
+        file = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        with file:
+            after = os.fstat(file.fileno())
+            if not stat.S_ISREG(after.st_mode):
+                raise ValueError("Private key path is not a regular file: " + PRIVATE_KEY_PATH)
+            if after.st_size > MAX_PRIVATE_KEY_BYTES:
+                raise ValueError("Private key file exceeds the size limit: " + PRIVATE_KEY_PATH)
+            if os.name != "nt" and after.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                raise PermissionError("Private key file permissions are too broad: " + PRIVATE_KEY_PATH)
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise OSError("Private key file changed while opening: " + PRIVATE_KEY_PATH)
+            encoded = file.read(MAX_PRIVATE_KEY_BYTES + 1)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    if len(encoded) > MAX_PRIVATE_KEY_BYTES:
+        raise ValueError("Private key file exceeds the size limit: " + PRIVATE_KEY_PATH)
+    value = encoded.decode("utf-8")
+    if not value or "\\r" in value or "\\n" in value or "\\0" in value:
+        raise ValueError("Private key file must contain exactly one line")
+    return value
 
 # ---------------------------------------------------------------------------
 # UUIDv7
@@ -259,7 +299,7 @@ def main():
         }}
 
         canonical = jcs_canonicalize(eor_without_sig)
-        signature = sign_ed25519(PRIVATE_KEY, canonical.encode("utf-8"))
+        signature = sign_ed25519(read_private_key(), canonical.encode("utf-8"))
 
         eor = dict(eor_without_sig)
         eor["chain_hash"] = chain_hash

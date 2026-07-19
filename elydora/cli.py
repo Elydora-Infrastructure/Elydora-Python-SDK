@@ -10,10 +10,10 @@ import argparse
 import json
 import os
 import shutil
-import stat
 import sys
 from typing import Dict, NamedTuple, NoReturn, Optional, Type
 
+from ._cli_secrets import resolve_install_secrets
 from ._version import __version__
 from ._runtime_paths import (
     ensure_private_directory,
@@ -40,6 +40,7 @@ from .plugins.kimi import KimiPlugin
 from .plugins.letta import LettaPlugin
 from .plugins.opencode import OpenCodePlugin
 from .plugins.qwen import QwenPlugin
+from .plugins._file_io import write_text_atomic
 
 
 PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
@@ -60,6 +61,11 @@ PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
     "qwen": QwenPlugin,
 }
 
+LEGACY_SECRET_OPTIONS = {
+    "--private_key": "--private_key_file",
+    "--token": "--token_file",
+}
+
 
 def _runtime_root() -> str:
     return os.path.join(os.path.expanduser("~"), ".elydora")
@@ -68,6 +74,17 @@ def _runtime_root() -> str:
 def _exit_with_error(message: str) -> NoReturn:
     print(f"Error: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def _reject_legacy_secret_arguments(arguments: list[str]) -> None:
+    for argument in arguments:
+        option = argument.split("=", 1)[0]
+        replacement = LEGACY_SECRET_OPTIONS.get(option)
+        if replacement:
+            _exit_with_error(
+                f"{option} exposes credentials in process arguments; "
+                f"use {replacement} or hidden terminal input"
+            )
 
 
 def _resolve_agent_directory_or_exit(agent_id: str) -> str:
@@ -168,10 +185,19 @@ def cmd_install(args: argparse.Namespace) -> None:
     """Handle the 'install' subcommand."""
     agent_name: str = args.agent
     agent_dir = _resolve_agent_directory_or_exit(args.agent_id)
+    plugin = _get_plugin(agent_name)
+
+    try:
+        secrets = resolve_install_secrets(
+            private_key_file=args.private_key_file,
+            token_file=args.token_file,
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        _exit_with_error(str(error))
 
     # Derive public key to verify the private key is valid
     try:
-        pub = get_public_key_base64url(args.private_key)
+        pub = get_public_key_base64url(secrets.private_key)
     except Exception as exc:
         print(f"Error: Invalid private key — {exc}", file=sys.stderr)
         sys.exit(1)
@@ -185,25 +211,26 @@ def cmd_install(args: argparse.Namespace) -> None:
     # Generate and write the guard script
     guard_script_path = os.path.join(agent_dir, "guard.py")
     guard_script = generate_guard_script(agent_name, args.agent_id)
-    with open(guard_script_path, "w", encoding="utf-8") as f:
-        f.write(guard_script)
-    if os.name != "nt":
-        os.chmod(guard_script_path, os.stat(guard_script_path).st_mode | stat.S_IEXEC)
+    write_text_atomic(
+        guard_script_path,
+        guard_script,
+        0o700,
+        "Elydora guard runtime",
+    )
     print(f"  Guard script: {guard_script_path}")
 
     config: InstallConfig = {
         "org_id": args.org_id,
         "agent_id": args.agent_id,
         "agent_name": agent_name,
-        "private_key": args.private_key,
+        "private_key": secrets.private_key,
         "kid": args.kid,
         "base_url": args.base_url,
         "guard_script_path": guard_script_path,
     }
-    if args.token:
-        config["token"] = args.token
+    if secrets.token:
+        config["token"] = secrets.token
 
-    plugin = _get_plugin(agent_name)
     plugin.install(config)
 
 
@@ -291,9 +318,17 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--agent", required=True, help="Agent name (e.g. claudecode, cursor)")
     install_parser.add_argument("--org_id", required=True, help="Organization ID")
     install_parser.add_argument("--agent_id", required=True, help="Agent ID")
-    install_parser.add_argument("--private_key", required=True, help="Base64url-encoded Ed25519 private key seed")
+    install_parser.add_argument(
+        "--private_key_file",
+        default=None,
+        help="Owner-only file containing the Ed25519 private key seed",
+    )
     install_parser.add_argument("--kid", required=True, help="Key ID")
-    install_parser.add_argument("--token", default="", help="API token (from Console)")
+    install_parser.add_argument(
+        "--token_file",
+        default=None,
+        help="Owner-only file containing the optional API token",
+    )
     install_parser.add_argument("--base_url", default="https://api.elydora.com", help="API base URL")
 
     # uninstall
@@ -312,6 +347,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """CLI entry point."""
+    _reject_legacy_secret_arguments(sys.argv[1:])
     parser = build_parser()
     args = parser.parse_args()
 

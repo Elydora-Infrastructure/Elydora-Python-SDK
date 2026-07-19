@@ -7,6 +7,7 @@ import json
 import os
 import sys
 
+from ._file_io import write_json_atomic, write_text_atomic
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .hook_template import generate_hook_script
 
@@ -44,35 +45,41 @@ class OpenCodePlugin(AgentPlugin):
             "token": config.get("token", ""),
             "agent_name": config.get("agent_name", "opencode"),
         }
-        _write_text(
+        write_json_atomic(
             os.path.join(agent_dir, "config.json"),
-            json.dumps(config_data, indent=2) + "\n",
+            config_data,
             0o600,
+            "Elydora runtime config",
         )
-        _write_text(
+        write_text_atomic(
             os.path.join(agent_dir, "private.key"),
             config.get("private_key", ""),
             0o600,
+            "Elydora private key",
         )
 
         hook_path = self._hook_path(agent_id)
         hook_script = generate_hook_script(
             org_id=config.get("org_id", ""),
             agent_id=agent_id,
-            private_key=config.get("private_key", ""),
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
         )
-        _write_text(hook_path, hook_script, 0o700)
+        write_text_atomic(
+            hook_path,
+            hook_script,
+            0o700,
+            "Elydora audit runtime",
+        )
 
-        os.makedirs(PLUGIN_DIR, exist_ok=True)
-        _write_text(
+        write_text_atomic(
             self._plugin_path(),
             _generate_js_plugin(
                 hook_script_path=hook_path,
                 guard_script_path=guard_script_path,
             ),
             0o700,
+            "OpenCode Elydora plugin",
         )
         print("Elydora hook installed for OpenCode.")
         print(f"  Plugin: {self._plugin_path()}")
@@ -104,16 +111,6 @@ class OpenCodePlugin(AgentPlugin):
         installed = os.path.isfile(plugin_path) and runtime_ready
         details = f"Plugin: {plugin_path}" if installed else "Not installed"
         return PluginStatus(installed=installed, agent="opencode", details=details)
-
-
-def _write_text(path: str, content: str, mode: int) -> None:
-    with open(path, "w", encoding="utf-8") as file:
-        file.write(content)
-    try:
-        os.chmod(path, mode)
-    except OSError:
-        pass
-
 
 def _generate_js_plugin(*, hook_script_path: str, guard_script_path: str) -> str:
     return f'''// Elydora Audit Plugin for OpenCode

@@ -42,6 +42,9 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 - Use documented defaults only for genuinely optional configuration.
 - Avoid compatibility shims without a named public or user configuration contract.
 - Resolve every agent runtime directory as one physical child of `~/.elydora`; reject separators, traversal segments, cross-platform reserved names, symbolic-link directories, and linked identity configs before writes or recursive removal. Validate stored directory identity before changing host CLI configuration, and require an explicit agent ID when discovery is ambiguous.
+- Accept CLI install credentials through hidden terminal input or physical owner-only credential files. Keep credentials out of process arguments, reject legacy secret options with redacted errors, and require one UTF-8 line of at most 64 KiB.
+- Persist the signing key once at `~/.elydora/<agent-id>/private.key` with mode `0600`. Generated audit runtimes read and validate that physical file at execution time.
+- Write runtime secrets, generated scripts, and provider configuration through same-directory temporary files followed by atomic replacement. Surface permission and replacement failures.
 - Interpret `max_retries` as retries after the initial attempt and reject negative or non-integer values.
 - Automatically retry RFC-idempotent methods; retry non-idempotent methods only when the transport proves the request was never sent.
 - Honor valid `Retry-After` delay-seconds and HTTP-date values, and release retryable responses before sleeping.
