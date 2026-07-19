@@ -41,6 +41,11 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
         "hook_event": "PostToolUse",
         "config_path": "~/.kiro/hooks/",
     },
+    "kimi": {
+        "name": "Kimi Code",
+        "hook_event": "PreToolUse/PostToolUse",
+        "config_path": "~/.kimi-code/config.toml",
+    },
     "letta": {
         "name": "Letta Code",
         "hook_event": "PostToolUse",

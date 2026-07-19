@@ -25,6 +25,7 @@ from .plugins.cursor import CursorPlugin
 from .plugins.gemini import GeminiPlugin
 from .plugins.kirocli import KiroCliPlugin
 from .plugins.kiroide import KiroIdePlugin
+from .plugins.kimi import KimiPlugin
 from .plugins.letta import LettaPlugin
 from .plugins.opencode import OpenCodePlugin
 
@@ -37,6 +38,7 @@ PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
     "gemini": GeminiPlugin,
     "kirocli": KiroCliPlugin,
     "kiroide": KiroIdePlugin,
+    "kimi": KimiPlugin,
     "letta": LettaPlugin,
     "opencode": OpenCodePlugin,
 }

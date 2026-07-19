@@ -22,6 +22,7 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 - Use the provider's documented blocking mechanism. Command-hook providers that define exit code `2` must receive exit code `2` from the freeze guard.
 - Report installation as healthy only when a complete hook contract references both generated runtime scripts and both scripts exist.
 - Model stable, legacy, and early-access hook generations as explicit contracts. Keep their activation requirements visible in CLI output and README guidance.
+- Select Kimi Code and legacy kimi-cli config targets from existing runtime evidence; a fresh installation targets current Kimi Code and keeps migration markers isolated to active runtimes.
 
 ## Code Quality
 
