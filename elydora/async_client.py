@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import time
-import asyncio
 import warnings
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import aiohttp
 
+from ._async_http import request_with_retries
+from ._retry import require_max_retries
 from .crypto import compute_chain_hash, compute_payload_hash, sign_eor
 from .errors import ElydoraError
 from .integration_types import require_integration_type
@@ -20,7 +21,6 @@ from .types import (
     DeepHealthResponse,
     DeleteAgentResponse,
     EOR,
-    FreezeAgentResponse,
     GetAgentResponse,
     GetEpochResponse,
     GetExportResponse,
@@ -81,7 +81,7 @@ class AsyncElydoraClient:
         self.private_key = private_key
         self.base_url = base_url.rstrip("/")
         self.ttl_ms = ttl_ms
-        self.max_retries = max_retries
+        self.max_retries = require_max_retries(max_retries)
         self.token = token
 
         self._prev_chain_hash = GENESIS_CHAIN_HASH
@@ -129,23 +129,17 @@ class AsyncElydoraClient:
         hdrs = headers or self._headers()
         session = await self._get_session()
 
-        last_exc: Optional[Exception] = None
-        for attempt in range(0, self.max_retries + 1):
-            try:
-                async with session.request(
-                    method, url, json=json_body, params=params, headers=hdrs, timeout=aiohttp.ClientTimeout(total=30)
-                ) as resp:
-                    return await self._handle_response(resp)
-            except ElydoraError:
-                raise
-            except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
-                last_exc = exc
-                if attempt < self.max_retries:
-                    await asyncio.sleep(min(2 ** attempt, 8))
-                    continue
-                raise
-
-        raise last_exc  # type: ignore[misc]
+        return await request_with_retries(
+            session,
+            method,
+            url,
+            path=path,
+            max_retries=self.max_retries,
+            response_handler=self._handle_response,
+            json_body=json_body,
+            params=params,
+            headers=hdrs,
+        )
 
     @staticmethod
     async def _handle_response(resp: aiohttp.ClientResponse) -> Any:

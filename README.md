@@ -129,10 +129,14 @@ client = ElydoraClient(
     private_key="<seed>",       # Base64url-encoded Ed25519 seed
     base_url="https://...",     # API base URL (default: https://api.elydora.com)
     ttl_ms=30000,               # Operation TTL in ms (default: 30000)
-    max_retries=3,              # Max retries on transient failures (default: 3)
+    max_retries=3,              # Retries after the initial attempt (default: 3)
     token="<api-token>",         # Optional API token
 )
 ```
+
+Automatic retries apply to RFC-idempotent methods.
+Connection failures that prove a request was never sent can also retry non-idempotent methods.
+Retryable responses honor both `Retry-After` seconds and HTTP-date values.
 
 ### Authentication
 
