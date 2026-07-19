@@ -11,6 +11,11 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
         "hook_event": "PostToolUse",
         "config_path": "~/.claude/settings.json",
     },
+    "codex": {
+        "name": "OpenAI Codex",
+        "hook_event": "PreToolUse/PostToolUse",
+        "config_path": "~/.codex/hooks.json",
+    },
     "copilot": {
         "name": "Copilot CLI",
         "hook_event": "PostToolUse",
