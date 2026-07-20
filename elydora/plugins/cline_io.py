@@ -1,53 +1,57 @@
-"""Fail-fast Cline hook I/O and runtime validation."""
+"""Physical Cline hook and managed runtime validation."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import base64
 import os
-import tempfile
-from typing import List, Sequence, Tuple
+from typing import Any, Optional
+import urllib.parse
 
-from ._file_io import (
-    read_json,
-    regular_file_exists,
-    remove_file,
-    require_runtime,
-    write_text_atomic,
+from ._managed_files import (
+    MAX_CONFIG_BYTES,
+    MAX_SECRET_BYTES,
+    physical_directory_exists,
+    physical_file_exists,
+    read_physical_file,
 )
+from ._strict_json import JsonObject, parse_json_object
 from .cline_contract import (
     AGENT_KEY,
+    AUDIT_SCRIPT,
+    GUARD_SCRIPT,
     HookFile,
     RuntimeContract,
+    elydora_dir,
     parse_metadata,
     same_agent_id,
 )
+from .guard_template import generate_guard_script
+from .hook_template import generate_hook_script
 
 
-@dataclass(frozen=True)
-class PendingWrite:
-    state: HookFile
-    source: str
+def _same_path(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
+        os.path.abspath(right)
+    )
 
 
-@dataclass(frozen=True)
-class StagedFile:
-    state: HookFile
-    temporary_path: str
+def validate_hook_tree(hooks_directory: str) -> None:
+    physical_directory_exists(
+        os.path.dirname(hooks_directory), "Cline configuration directory"
+    )
+    physical_directory_exists(hooks_directory, "Cline hooks directory")
 
 
 def read_hook_file(file_path: str) -> HookFile:
-    try:
-        with open(file_path, "r", encoding="utf-8") as file:
-            source = file.read()
-    except FileNotFoundError:
+    validate_hook_tree(os.path.dirname(file_path))
+    snapshot = read_physical_file(file_path, "Cline hook")
+    if snapshot is None:
         return HookFile(False, file_path)
-    except OSError as error:
-        raise OSError(f"Read Cline hook at {file_path}: {error}") from error
     return HookFile(
         exists=True,
         file_path=file_path,
-        source=source,
-        metadata=parse_metadata(file_path, source),
+        source=snapshot.contents,
+        metadata=parse_metadata(file_path, snapshot.contents),
     )
 
 
@@ -59,136 +63,194 @@ def require_available_hook_file(file: HookFile) -> None:
         )
 
 
-def _remove_temporary(path: str) -> None:
+def validate_api_origin(value: str, label: str = "base_url") -> None:
     try:
-        os.remove(path)
-    except FileNotFoundError:
-        return
-
-
-def _stage_file(write: PendingWrite) -> StagedFile:
-    directory = os.path.dirname(write.state.file_path)
-    try:
-        os.makedirs(directory, mode=0o700, exist_ok=True)
-    except OSError as error:
-        raise OSError(f"Create Cline hooks directory at {directory}: {error}") from error
-    descriptor = -1
-    temporary_path = ""
-    try:
-        descriptor, temporary_path = tempfile.mkstemp(
-            prefix=f".{os.path.basename(write.state.file_path)}.",
-            suffix=".tmp",
-            dir=directory,
-            text=True,
+        parsed = urllib.parse.urlsplit(value)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as error:
+        raise ValueError(f"{label} must be an absolute HTTP or HTTPS URL") from error
+    invalid_character = "\\" in value or any(
+        character.isspace() or ord(character) < 32 for character in value
+    )
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or hostname is None
+        or invalid_character
+    ):
+        raise ValueError(f"{label} must be an absolute HTTP or HTTPS URL")
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            f"{label} must exclude credentials, query parameters, and fragments"
         )
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as file:
-            descriptor = -1
-            file.write(write.source)
-            file.flush()
-            os.fsync(file.fileno())
-        os.chmod(temporary_path, 0o700)
-        return StagedFile(write.state, temporary_path)
-    except Exception as error:
-        if descriptor >= 0:
-            try:
-                os.close(descriptor)
-            except OSError as close_error:
-                _remove_temporary(temporary_path)
-                raise OSError(
-                    f"Stage Cline hook at {write.state.file_path}: {error}; "
-                    f"close failed: {close_error}"
-                ) from error
-        _remove_temporary(temporary_path)
-        raise OSError(
-            f"Stage Cline hook at {write.state.file_path}: {error}"
+
+
+def validate_private_key(value: str, label: str = "private_key") -> None:
+    try:
+        padded = value + "=" * ((4 - len(value) % 4) % 4)
+        seed = base64.b64decode(
+            padded.replace("-", "+").replace("_", "/"), validate=True
+        )
+        canonical = base64.urlsafe_b64encode(seed).rstrip(b"=").decode("ascii")
+    except (ValueError, UnicodeEncodeError) as error:
+        raise ValueError(
+            f"{label} must be a canonical 32-byte base64url value"
         ) from error
+    if len(seed) != 32 or canonical != value:
+        raise ValueError(f"{label} must be a canonical 32-byte base64url value")
 
 
-def _rollback_file(state: HookFile) -> None:
-    if state.exists:
-        if state.source is None:
-            raise RuntimeError("Existing Cline hook rollback state is missing source")
-        write_text_atomic(
-            state.file_path,
-            state.source,
-            0o700,
-            "Cline hook rollback",
+def _require_non_empty_string(value: Any, field: str, config_path: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Elydora runtime config {field} is invalid: {config_path}")
+    return value
+
+
+def _validate_runtime_config(
+    config: JsonObject, expected_agent_id: str, config_path: str
+) -> None:
+    supported = {"org_id", "agent_id", "kid", "base_url", "token", "agent_name"}
+    extra = next((key for key in config if key not in supported), None)
+    if extra is not None:
+        raise ValueError(
+            f'Elydora runtime config has unsupported field "{extra}": {config_path}'
         )
-    else:
-        remove_file(state.file_path, "Cline hook rollback")
+    _require_non_empty_string(config.get("org_id"), "org_id", config_path)
+    _require_non_empty_string(config.get("kid"), "kid", config_path)
+    agent_id = _require_non_empty_string(
+        config.get("agent_id"), "agent_id", config_path
+    )
+    if (
+        not same_agent_id(agent_id, expected_agent_id)
+        or config.get("agent_name") != AGENT_KEY
+    ):
+        raise ValueError(
+            f"Elydora runtime identity does not match Cline hooks: {config_path}"
+        )
+    if "token" in config:
+        _require_non_empty_string(config.get("token"), "token", config_path)
+    base_url = _require_non_empty_string(
+        config.get("base_url"), "base_url", config_path
+    )
+    validate_api_origin(base_url, "Elydora runtime config base_url")
 
 
-def write_hook_pair(guard: PendingWrite, audit: PendingWrite) -> None:
-    staged: List[StagedFile] = []
-    try:
-        staged.append(_stage_file(guard))
-        staged.append(_stage_file(audit))
-    except Exception as error:
-        cleanup_errors: List[str] = []
-        for item in staged:
-            try:
-                _remove_temporary(item.temporary_path)
-            except OSError as cleanup_error:
-                cleanup_errors.append(str(cleanup_error))
-        suffix = f"; cleanup failed: {'; '.join(cleanup_errors)}" if cleanup_errors else ""
-        raise OSError(f"Stage Cline hook pair: {error}{suffix}") from error
-
-    committed: List[StagedFile] = []
-    try:
-        for item in staged:
-            os.replace(item.temporary_path, item.state.file_path)
-            committed.append(item)
-    except Exception as error:
-        recovery_errors: List[str] = []
-        for item in reversed(committed):
-            try:
-                _rollback_file(item.state)
-            except (OSError, RuntimeError) as rollback_error:
-                recovery_errors.append(str(rollback_error))
-        for item in staged[len(committed):]:
-            try:
-                _remove_temporary(item.temporary_path)
-            except OSError as cleanup_error:
-                recovery_errors.append(str(cleanup_error))
-        suffix = f"; recovery failed: {'; '.join(recovery_errors)}" if recovery_errors else ""
-        raise OSError(f"Write Cline hook pair: {error}{suffix}") from error
+def _read_runtime_config(file_path: str) -> Optional[JsonObject]:
+    snapshot = read_physical_file(
+        file_path, "Elydora runtime config", MAX_CONFIG_BYTES
+    )
+    if snapshot is None:
+        return None
+    return parse_json_object(
+        snapshot.contents, f"Elydora runtime config at {file_path}"
+    )
 
 
-def remove_owned_hooks(files: Sequence[HookFile], agent_id: str = "") -> None:
-    for file in files:
-        owned_agent_id = file.metadata.agent_id if file.metadata else ""
-        if not owned_agent_id or (
-            agent_id and not same_agent_id(owned_agent_id, agent_id)
-        ):
-            continue
-        remove_file(file.file_path, "Cline hook")
+def validate_runtime_tree(agent_directory: str, agent_id: str) -> None:
+    root = elydora_dir()
+    if not physical_directory_exists(root, "Elydora runtime directory"):
+        return
+    if not physical_directory_exists(
+        agent_directory, "Elydora agent runtime directory"
+    ):
+        return
+    config_path = os.path.join(agent_directory, "config.json")
+    config = _read_runtime_config(config_path)
+    artifacts = (
+        ("private.key", "Elydora private key"),
+        (GUARD_SCRIPT, "Elydora guard runtime"),
+        (AUDIT_SCRIPT, "Elydora audit runtime"),
+        ("chain-state.json", "Elydora chain state"),
+        ("status-cache.json", "Elydora status cache"),
+        ("error.log", "Elydora error log"),
+    )
+    artifact_exists = any(
+        physical_file_exists(os.path.join(agent_directory, name), label)
+        for name, label in artifacts
+    )
+    if config is None:
+        if artifact_exists:
+            raise ValueError(
+                "Elydora runtime identity cannot be verified without config.json: "
+                f"{agent_directory}"
+            )
+        return
+    configured_id = config.get("agent_id")
+    if (
+        not isinstance(configured_id, str)
+        or not same_agent_id(configured_id, agent_id)
+        or config.get("agent_name") != AGENT_KEY
+    ):
+        raise ValueError(
+            "Elydora runtime config identity does not match Cline agent "
+            f"{agent_id}: {config_path}"
+        )
+
+
+def _valid_contract_paths(contract: RuntimeContract) -> bool:
+    return (
+        _same_path(os.path.dirname(contract.agent_directory), elydora_dir())
+        and _same_path(
+            contract.guard_path,
+            os.path.join(contract.agent_directory, GUARD_SCRIPT),
+        )
+        and _same_path(
+            contract.audit_path,
+            os.path.join(contract.agent_directory, AUDIT_SCRIPT),
+        )
+    )
 
 
 def runtime_files_exist(contract: RuntimeContract) -> bool:
-    config_path = os.path.join(contract.agent_directory, "config.json")
-    config = read_json(config_path, "Elydora runtime config")
-    if config is None:
+    if not _valid_contract_paths(contract):
         return False
-    config_agent_id = config.get("agent_id")
-    if (
-        config.get("agent_name") != AGENT_KEY
-        or not isinstance(config_agent_id, str)
-        or not same_agent_id(config_agent_id, contract.agent_id)
+    root = elydora_dir()
+    if not physical_directory_exists(root, "Elydora runtime directory"):
+        return False
+    if not physical_directory_exists(
+        contract.agent_directory, "Elydora agent runtime directory"
     ):
         return False
-    files: Tuple[Tuple[str, str], ...] = (
-        (contract.guard_path, "Elydora guard runtime"),
-        (contract.audit_path, "Elydora audit runtime"),
+    config_path = os.path.join(contract.agent_directory, "config.json")
+    key_path = os.path.join(contract.agent_directory, "private.key")
+    config = _read_runtime_config(config_path)
+    key = read_physical_file(key_path, "Elydora private key", MAX_SECRET_BYTES)
+    guard = read_physical_file(contract.guard_path, "Elydora guard runtime")
+    audit = read_physical_file(contract.audit_path, "Elydora audit runtime")
+    if any(item is None for item in (config, key, guard, audit)):
+        return False
+    assert config is not None
+    assert key is not None
+    assert guard is not None
+    assert audit is not None
+    _validate_runtime_config(config, contract.agent_id, config_path)
+    validate_private_key(key.contents, "Elydora private key")
+    expected_audit = generate_hook_script(
+        org_id="",
+        agent_id=contract.agent_id,
+        kid="",
+        base_url="",
+        native_payload=True,
+        agent_name=AGENT_KEY,
     )
-    return all(regular_file_exists(path, label) for path, label in files)
+    return (
+        guard.contents == generate_guard_script(AGENT_KEY, contract.agent_id)
+        and audit.contents == expected_audit
+    )
 
 
 __all__ = [
-    "PendingWrite",
     "read_hook_file",
-    "remove_owned_hooks",
     "require_available_hook_file",
-    "require_runtime",
     "runtime_files_exist",
-    "write_hook_pair",
+    "validate_api_origin",
+    "validate_hook_tree",
+    "validate_private_key",
+    "validate_runtime_tree",
 ]

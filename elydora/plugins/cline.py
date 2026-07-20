@@ -2,107 +2,69 @@
 
 from __future__ import annotations
 
-import os
+from typing import Tuple
 
-from ._file_io import write_json_atomic, write_text_atomic
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .cline_contract import (
     AGENT_KEY,
-    AUDIT_SCRIPT,
     HookFile,
-    build_metadata,
-    build_wrapper,
-    elydora_dir,
+    HookPaths,
     resolve_hook_files,
     runtime_contract,
 )
-from .cline_io import (
-    PendingWrite,
-    read_hook_file,
-    remove_owned_hooks,
-    require_available_hook_file,
-    require_runtime,
-    runtime_files_exist,
-    write_hook_pair,
+from .cline_installation import (
+    commit_cline_installation,
+    commit_cline_uninstall,
+    preflight_cline_installation,
+    prepare_cline_installation,
+    prepare_cline_uninstall,
 )
-from .hook_template import generate_hook_script
+from .cline_io import (
+    read_hook_file,
+    require_available_hook_file,
+    runtime_files_exist,
+)
+
+
+def _read_hook_pair() -> Tuple[HookPaths, HookFile, HookFile]:
+    paths = resolve_hook_files()
+    return (
+        paths,
+        read_hook_file(paths.guard_path),
+        read_hook_file(paths.audit_path),
+    )
+
+
+def _require_available_pair(guard_file: HookFile, audit_file: HookFile) -> None:
+    require_available_hook_file(guard_file)
+    require_available_hook_file(audit_file)
 
 
 class ClinePlugin(AgentPlugin):
     """Install Elydora into Cline's global file-hook directory."""
 
+    manages_guard_runtime = True
+
+    def preflight_install(self, config: InstallConfig) -> None:
+        _paths, guard_file, audit_file = _read_hook_pair()
+        _require_available_pair(guard_file, audit_file)
+        preflight_cline_installation(config, guard_file, audit_file)
+
     def install(self, config: InstallConfig) -> None:
-        agent_id = config.get("agent_id", "")
-        if not agent_id:
-            raise ValueError("agent_id is required")
-        paths = resolve_hook_files()
-        guard_state = read_hook_file(paths.guard_path)
-        audit_state = read_hook_file(paths.audit_path)
-        require_available_hook_file(guard_state)
-        require_available_hook_file(audit_state)
-
-        guard_path = config.get("guard_script_path", "")
-        require_runtime(guard_path, "Elydora guard runtime")
-        agent_directory = os.path.join(elydora_dir(), agent_id)
-        audit_path = os.path.join(agent_directory, AUDIT_SCRIPT)
-        guard_metadata = build_metadata("guard", agent_id, guard_path)
-        audit_metadata = build_metadata("audit", agent_id, audit_path)
-        guard_source = build_wrapper(guard_metadata)
-        audit_source = build_wrapper(audit_metadata)
-        runtime_contract(
-            HookFile(True, paths.guard_path, guard_source, guard_metadata),
-            HookFile(True, paths.audit_path, audit_source, audit_metadata),
-        )
-
-        runtime_config = {
-            "org_id": config.get("org_id", ""),
-            "agent_id": agent_id,
-            "kid": config.get("kid", ""),
-            "base_url": config.get("base_url", "https://api.elydora.com"),
-            "token": config.get("token", ""),
-            "agent_name": AGENT_KEY,
-        }
-        audit_script = generate_hook_script(
-            org_id=config.get("org_id", ""),
-            agent_id=agent_id,
-            kid=config.get("kid", ""),
-            base_url=config.get("base_url", "https://api.elydora.com"),
-        )
-        write_json_atomic(
-            os.path.join(agent_directory, "config.json"),
-            runtime_config,
-            0o600,
-            "Elydora runtime config",
-        )
-        write_text_atomic(
-            os.path.join(agent_directory, "private.key"),
-            config.get("private_key", ""),
-            0o600,
-            "Elydora private key",
-        )
-        write_text_atomic(
-            audit_path,
-            audit_script,
-            0o700,
-            "Elydora audit runtime",
-        )
-        write_hook_pair(
-            PendingWrite(guard_state, guard_source),
-            PendingWrite(audit_state, audit_source),
-        )
+        _paths, guard_file, audit_file = _read_hook_pair()
+        _require_available_pair(guard_file, audit_file)
+        changes = prepare_cline_installation(config, guard_file, audit_file)
+        commit_cline_installation(changes)
         print("Cline: user-level PreToolUse and PostToolUse hooks installed.")
 
     def uninstall(self, agent_id: str = "") -> None:
-        paths = resolve_hook_files()
-        guard_state = read_hook_file(paths.guard_path)
-        audit_state = read_hook_file(paths.audit_path)
-        remove_owned_hooks((guard_state, audit_state), agent_id)
+        _paths, guard_file, audit_file = _read_hook_pair()
+        changes = prepare_cline_uninstall((guard_file, audit_file), agent_id)
+        commit_cline_uninstall(changes)
 
     def status(self) -> PluginStatus:
-        paths = resolve_hook_files()
-        guard_state = read_hook_file(paths.guard_path)
-        audit_state = read_hook_file(paths.audit_path)
-        contract = runtime_contract(guard_state, audit_state)
+        paths, guard_file, audit_file = _read_hook_pair()
+        contract = runtime_contract(guard_file, audit_file)
         if contract is None:
             return PluginStatus(
                 installed=False,
@@ -115,7 +77,7 @@ class ClinePlugin(AgentPlugin):
             if installed
             else (
                 f"Configured at {paths.hooks_directory}; "
-                "runtime scripts missing"
+                "managed runtime incomplete"
             )
         )
         return PluginStatus(

@@ -8,6 +8,8 @@ import json
 import os
 from typing import Any, Dict, Optional
 
+from elydora._runtime_paths import resolve_agent_directory
+
 
 AGENT_KEY = "cline"
 GUARD_FILE_NAME = "PreToolUse.mjs"
@@ -177,7 +179,7 @@ async function main() {
 
   if (hookKind === 'guard' && result.code === 2) {
     const errorMessage = result.stderr.trim() || 'Agent is frozen by Elydora.';
-    process.stdout.write('HOOK_CONTROL\\t' + JSON.stringify({ cancel: true, errorMessage }) + '\\n');
+    process.stdout.write(JSON.stringify({ cancel: true, errorMessage }) + '\\n');
     return;
   }
   if (result.signal) throw new Error('runtime terminated by signal ' + result.signal);
@@ -251,11 +253,6 @@ def assert_wrapper_integrity(file: HookFile) -> None:
         )
 
 
-def _validate_agent_segment(agent_id: str) -> None:
-    if agent_id in {".", ".."} or os.path.basename(agent_id) != agent_id:
-        raise ValueError("Elydora Cline hook metadata contains an invalid agentId")
-
-
 def runtime_contract(
     guard_file: HookFile,
     audit_file: HookFile,
@@ -270,8 +267,7 @@ def runtime_contract(
         raise ValueError("Elydora Cline hook files contain mismatched event metadata")
     if not same_agent_id(guard.agent_id, audit.agent_id):
         raise ValueError("Elydora Cline hook files reference different agents")
-    _validate_agent_segment(guard.agent_id)
-    agent_directory = os.path.join(elydora_dir(), guard.agent_id)
+    agent_directory = resolve_agent_directory(elydora_dir(), guard.agent_id)
     expected_guard = os.path.join(agent_directory, GUARD_SCRIPT)
     expected_audit = os.path.join(agent_directory, AUDIT_SCRIPT)
     if not _same_path(guard.runtime_path, expected_guard) or not _same_path(
