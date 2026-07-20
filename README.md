@@ -80,7 +80,7 @@ Credential options may be omitted in an interactive terminal; the CLI then reads
 
 Codex performs a one-time trust review for user hooks. Run `/hooks` in Codex after installation and trust the Elydora `PreToolUse` and `PostToolUse` definitions.
 
-Cursor installation writes native global `preToolUse` and `postToolUse` handlers to `~/.cursor/hooks.json`. Elydora preserves unrelated user hooks, leaves project and enterprise sources unchanged, and configures a 10-second fail-closed command boundary with exact freeze exit-code propagation.
+Cursor installation writes native global `preToolUse`, `postToolUse`, and `postToolUseFailure` handlers to `~/.cursor/hooks.json`. Elydora forwards Cursor's native success and failure payloads, preserves unrelated user hooks, and leaves project and enterprise sources unchanged. The generated guard and audit handlers use a 10-second fail-closed boundary, exact freeze exit-code propagation, protected runtime credentials, and one rollback-capable transaction for all runtime and hook configuration files.
 
 Cline installation writes `PreToolUse.mjs` and `PostToolUse.mjs` to `$CLINE_DIR/hooks` (default `~/.cline/hooks`). Elydora leaves the Documents and workspace hook roots unchanged. The wrappers preserve Cline's official payload and translate a frozen guard into JSON stdout cancellation control.
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 from threading import Thread
+import time
 
 from elydora.plugins.hook_template import generate_guard_script
 
@@ -98,7 +99,7 @@ def test_cached_frozen_status_uses_blocking_exit_code(tmp_path: Path) -> None:
     script_path, server = create_guard(tmp_path, "active")
     cache_path = tmp_path / ".elydora" / AGENT_ID / "status-cache.json"
     cache_path.write_text(
-        json.dumps({"status": "frozen", "cached_at": 4_102_444_800}),
+        json.dumps({"status": "frozen", "cached_at": time.time()}),
         encoding="utf-8",
     )
     try:

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import urllib.parse
 from typing import List, Optional
 
 from elydora._runtime_paths import resolve_agent_directory
+from elydora.utils import base64url_encode
 
 from ._transaction import FileChange
 from .base import AgentPlugin, InstallConfig, PluginStatus
@@ -29,6 +32,7 @@ from .cursor_io import (
     require_runtime_directory,
     runtime_change,
     runtime_files_exist,
+    validate_config_directory,
     validate_runtime_identity,
     write_cursor_changes,
 )
@@ -72,28 +76,73 @@ def _agent_paths(config: InstallConfig) -> tuple[str, str, str]:
     return agent_id, agent_directory, guard_path
 
 
+def _validate_install_config(config: InstallConfig) -> None:
+    for field in ("org_id", "agent_id", "kid", "private_key"):
+        value = config.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field} is required")
+    if config.get("agent_name") != AGENT_KEY:
+        raise ValueError(f"Cursor installation requires agent_name {AGENT_KEY}")
+    private_key = config["private_key"]
+    try:
+        padded = private_key + "=" * ((4 - len(private_key) % 4) % 4)
+        seed = base64.b64decode(
+            padded.replace("-", "+").replace("_", "/"),
+            validate=True,
+        )
+    except (ValueError, UnicodeEncodeError) as error:
+        raise ValueError(
+            "private_key must be a canonical 32-byte base64url value"
+        ) from error
+    if len(seed) != 32 or base64url_encode(seed) != private_key:
+        raise ValueError("private_key must be a canonical 32-byte base64url value")
+    base_url = config.get("base_url", "https://api.elydora.com")
+    if not isinstance(base_url, str):
+        raise ValueError("base_url must be a string")
+    parsed = urllib.parse.urlsplit(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("base_url must be an absolute HTTP or HTTPS URL")
+    token = config.get("token", "")
+    if not isinstance(token, str):
+        raise ValueError("token must be a string")
+
+
 class CursorPlugin(AgentPlugin):
     """Install Elydora into Cursor's native global user hooks."""
 
     manages_guard_runtime = True
 
     def preflight_install(self, config: InstallConfig) -> None:
+        _validate_install_config(config)
         read_document()
+        validate_config_directory()
         agent_id, agent_directory, guard_path = _agent_paths(config)
+        if not physical_directory_exists(runtime_root()):
+            return
         if not physical_directory_exists(agent_directory):
             return
-        validate_runtime_identity(
+        identity_exists = validate_runtime_identity(
             os.path.join(agent_directory, "config.json"),
             agent_id,
         )
+        runtime_exists = False
         for file_path, label in (
             (guard_path, "Elydora guard runtime"),
             (os.path.join(agent_directory, AUDIT_SCRIPT), "Elydora audit runtime"),
             (os.path.join(agent_directory, "private.key"), "Elydora private key"),
+            (os.path.join(agent_directory, "chain-state.json"), "Elydora chain state"),
+            (os.path.join(agent_directory, "status-cache.json"), "Elydora status cache"),
+            (os.path.join(agent_directory, "error.log"), "Elydora error log"),
         ):
-            physical_file_exists(file_path, label)
+            runtime_exists = physical_file_exists(file_path, label) or runtime_exists
+        if runtime_exists and not identity_exists:
+            raise ValueError(
+                "Elydora runtime identity cannot be verified without config.json: "
+                f"{agent_directory}"
+            )
 
     def install(self, config: InstallConfig) -> None:
+        self.preflight_install(config)
         document = read_document()
         agent_id, agent_directory, guard_path = _agent_paths(config)
         require_runtime_directory(agent_directory)
@@ -110,17 +159,25 @@ class CursorPlugin(AgentPlugin):
             *hooks.get("postToolUse", []),
             build_handler(audit_path),
         ]
+        hooks["postToolUseFailure"] = [
+            *hooks.get("postToolUseFailure", []),
+            build_handler(audit_path),
+        ]
         hook_script = generate_hook_script(
             org_id=config.get("org_id", ""),
             agent_id=agent_id,
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
             success_output="{}\n",
+            fail_closed=True,
+            native_payload=True,
+            agent_name=AGENT_KEY,
         )
         guard_script = generate_guard_script(
             AGENT_KEY,
             agent_id,
             success_output='{"permission":"allow"}\n',
+            fail_closed=True,
         )
         changes = _present([
             runtime_change(

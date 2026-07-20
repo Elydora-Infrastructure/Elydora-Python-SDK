@@ -48,6 +48,18 @@ def read_document() -> CursorDocument:
     return create_document(file_path) if raw is None else parse_document(file_path, raw)
 
 
+def validate_config_directory() -> None:
+    directory = os.path.dirname(config_path())
+    try:
+        metadata = os.lstat(directory)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise OSError(f"Inspect Cursor hooks directory at {directory}: {error}") from error
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise OSError(f"Cursor hooks directory is not a physical directory: {directory}")
+
+
 def rendered_change(rendered: RenderedDocument) -> Optional[FileChange]:
     if not rendered.changed:
         return None
@@ -122,10 +134,10 @@ def _read_runtime_config(file_path: str) -> Optional[JsonObject]:
 def validate_runtime_identity(
     file_path: str,
     agent_id: str,
-) -> None:
+) -> bool:
     config = _read_runtime_config(file_path)
     if config is None:
-        return
+        return False
     if config.get("agent_name") != AGENT_KEY or not _same_agent_id(
         config.get("agent_id"), agent_id
     ):
@@ -133,6 +145,7 @@ def validate_runtime_identity(
             f"Elydora runtime config identity does not match Cursor agent {agent_id}: "
             f"{file_path}"
         )
+    return True
 
 
 def _same_agent_id(value: Any, expected: str) -> bool:

@@ -24,6 +24,7 @@ from elydora.plugins import (
     opencode,
 )
 from elydora.plugins.hook_template import generate_hook_script
+from elydora.utils import base64url_decode
 
 
 PRIVATE_KEY = base64.urlsafe_b64encode(bytes([7]) * 32).rstrip(b"=").decode()
@@ -341,7 +342,7 @@ def test_generated_hook_reads_private_key_from_private_file(
 
     exec(compile(script, "hook.py", "exec"), namespace)
 
-    assert namespace["read_private_key"]() == PRIVATE_KEY
+    assert namespace["read_private_key"]() == base64url_decode(PRIVATE_KEY)
     assert PRIVATE_KEY not in script
     assert "PRIVATE_KEY_PATH" in script
 
@@ -393,7 +394,8 @@ def test_legacy_plugins_persist_one_owner_only_private_key(
     runtime_root = case_root / ".elydora"
     guard_path = runtime_root / "agent-1" / "guard.py"
     guard_path.parent.mkdir(parents=True)
-    guard_path.write_text("pass\n", encoding="utf-8")
+    if module is not cursor:
+        guard_path.write_text("pass\n", encoding="utf-8")
     if module is cursor:
         monkeypatch.setenv("HOME", str(case_root))
         monkeypatch.setenv("USERPROFILE", str(case_root))

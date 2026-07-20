@@ -240,6 +240,7 @@ def _contains_managed_hook(hooks: CursorHooks) -> bool:
         for event, script_name in (
             ("preToolUse", GUARD_SCRIPT),
             ("postToolUse", AUDIT_SCRIPT),
+            ("postToolUseFailure", AUDIT_SCRIPT),
         )
         for handler in hooks.get(event, [])
     )
@@ -269,6 +270,7 @@ def remove_managed_hooks(
     for event, script_name in (
         ("preToolUse", GUARD_SCRIPT),
         ("postToolUse", AUDIT_SCRIPT),
+        ("postToolUseFailure", AUDIT_SCRIPT),
     ):
         handlers = []
         for handler in result.get(event, []):
@@ -295,6 +297,7 @@ def _entirely_managed(document: CursorDocument) -> bool:
         script_name = {
             "preToolUse": GUARD_SCRIPT,
             "postToolUse": AUDIT_SCRIPT,
+            "postToolUseFailure": AUDIT_SCRIPT,
         }.get(event)
         if script_name is None or not handlers:
             return False
@@ -335,9 +338,10 @@ def _managed_ids(handlers: List[JsonObject], script_name: str) -> Dict[str, str]
 def runtime_contracts(hooks: CursorHooks) -> List[RuntimeContract]:
     guards = _managed_ids(hooks.get("preToolUse", []), GUARD_SCRIPT)
     audits = _managed_ids(hooks.get("postToolUse", []), AUDIT_SCRIPT)
+    failures = _managed_ids(hooks.get("postToolUseFailure", []), AUDIT_SCRIPT)
     contracts = []
     for key, agent_id in guards.items():
-        if key not in audits:
+        if key not in audits or key not in failures:
             continue
         agent_directory = os.path.join(runtime_root(), agent_id)
         contracts.append(RuntimeContract(
