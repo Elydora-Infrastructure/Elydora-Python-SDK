@@ -28,7 +28,7 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "copilot": {
         "name": "GitHub Copilot CLI",
-        "hook_event": "preToolUse/postToolUse",
+        "hook_event": "preToolUse/postToolUse/postToolUseFailure",
         "config_path": "~/.copilot/hooks/elydora-audit.json",
     },
     "cursor": {

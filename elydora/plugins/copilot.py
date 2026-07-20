@@ -1,188 +1,129 @@
-"""GitHub Copilot CLI user-hook integration."""
+"""GitHub Copilot CLI native user-hook integration."""
 
 from __future__ import annotations
 
-import json
 import os
-from typing import List, Optional
+from typing import List
 
-from ._transaction import (
-    FileChange,
-    file_change,
-    require_runtime,
-    write_changes,
-)
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .copilot_contract import (
     AGENT_KEY,
-    AUDIT_SCRIPT,
-    CopilotHooks,
     CopilotSources,
+    RenderedDocument,
     RuntimeContract,
     build_handler,
     remove_managed_hooks,
     render_document,
     runtime_contracts,
 )
-from .copilot_io import read_sources, rendered_change, runtime_files_exist
-from .hook_template import generate_hook_script
+from .copilot_installation import (
+    commit_copilot_installation,
+    commit_copilot_uninstall,
+    preflight_copilot_installation,
+    prepare_copilot_installation,
+    prepare_copilot_uninstall,
+)
+from .copilot_io import read_sources, runtime_files_exist
 
 
-ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
-
-
-def _home_dir() -> str:
-    return os.path.expanduser("~")
-
-
-def _json_source(value: dict) -> str:
-    return json.dumps(value, indent=2) + "\n"
-
-
-def _runtime_config(config: InstallConfig, agent_id: str) -> dict:
-    value = {
-        "org_id": config.get("org_id", ""),
-        "agent_id": agent_id,
-        "kid": config.get("kid", ""),
-        "base_url": config.get("base_url", "https://api.elydora.com"),
-        "agent_name": AGENT_KEY,
-    }
-    token = config.get("token", "")
-    if token:
-        value["token"] = token
-    return value
-
-
-def _rendered_changes(
+def _render_installation(
     sources: CopilotSources,
-    user_hooks: CopilotHooks,
-    agent_id: str = "",
-) -> List[FileChange]:
+    guard_path: str,
+    audit_path: str,
+) -> List[RenderedDocument]:
+    user_hooks = remove_managed_hooks(sources.user.hooks)
+    user_hooks["preToolUse"] = [
+        *user_hooks.get("preToolUse", []),
+        build_handler(guard_path),
+    ]
+    user_hooks["postToolUse"] = [
+        *user_hooks.get("postToolUse", []),
+        build_handler(audit_path),
+    ]
+    user_hooks["postToolUseFailure"] = [
+        *user_hooks.get("postToolUseFailure", []),
+        build_handler(audit_path),
+    ]
     rendered = [render_document(sources.user, user_hooks)]
     if sources.legacy is not None:
         rendered.append(render_document(
             sources.legacy,
-            remove_managed_hooks(
-                sources.legacy.hooks,
-                ELYDORA_DIR,
-                agent_id,
-            ),
+            remove_managed_hooks(sources.legacy.hooks),
         ))
-    return [
-        change
-        for item in rendered
-        for change in [rendered_change(item)]
-        if change is not None
-    ]
+    return rendered
 
 
-def _contracts(sources: CopilotSources) -> List[RuntimeContract]:
-    contracts = runtime_contracts(sources.user.hooks, ELYDORA_DIR)
-    if sources.legacy is not None:
-        contracts.extend(runtime_contracts(sources.legacy.hooks, ELYDORA_DIR))
-    unique = {}
-    for contract in contracts:
-        unique[os.path.normcase(contract.agent_id)] = contract
-    return list(unique.values())
-
-
-def _configured_path(
+def _render_uninstall(
     sources: CopilotSources,
-    contracts: List[RuntimeContract],
-) -> str:
-    user_ids = {
-        os.path.normcase(contract.agent_id)
-        for contract in runtime_contracts(sources.user.hooks, ELYDORA_DIR)
-    }
-    if any(os.path.normcase(contract.agent_id) in user_ids for contract in contracts):
-        return sources.user.file_path
+    agent_id: str,
+) -> List[RenderedDocument]:
+    rendered = [render_document(
+        sources.user,
+        remove_managed_hooks(sources.user.hooks, agent_id),
+    )]
     if sources.legacy is not None:
-        return sources.legacy.file_path
-    return sources.user.file_path
+        rendered.append(render_document(
+            sources.legacy,
+            remove_managed_hooks(sources.legacy.hooks, agent_id),
+        ))
+    return rendered
+
+
+def _merged_contracts(sources: CopilotSources) -> List[RuntimeContract]:
+    contracts = runtime_contracts(sources.user.hooks)
+    if sources.legacy is not None:
+        contracts.extend(runtime_contracts(sources.legacy.hooks))
+    unique = {
+        os.path.normcase(contract.agent_id): contract
+        for contract in contracts
+    }
+    return list(unique.values())
 
 
 class CopilotPlugin(AgentPlugin):
     """Install Elydora into GitHub Copilot CLI's global user hooks."""
 
+    manages_guard_runtime = True
+
+    def preflight_install(self, config: InstallConfig) -> None:
+        sources = read_sources()
+        preflight_copilot_installation(config, sources)
+
     def install(self, config: InstallConfig) -> None:
-        agent_id = config.get("agent_id", "")
-        if not agent_id:
-            raise ValueError("agent_id is required")
-        sources = read_sources(_home_dir())
-        guard_path = config.get("guard_script_path", "")
-        require_runtime(guard_path, "Elydora guard runtime")
-
-        agent_directory = os.path.join(ELYDORA_DIR, agent_id)
-        audit_path = os.path.join(agent_directory, AUDIT_SCRIPT)
-        user_hooks = remove_managed_hooks(sources.user.hooks, ELYDORA_DIR)
-        user_hooks["preToolUse"] = [
-            *user_hooks.get("preToolUse", []),
-            build_handler(guard_path),
-        ]
-        user_hooks["postToolUse"] = [
-            *user_hooks.get("postToolUse", []),
-            build_handler(audit_path),
-        ]
-
-        audit_script = generate_hook_script(
-            org_id=config.get("org_id", ""),
-            agent_id=agent_id,
-            kid=config.get("kid", ""),
-            base_url=config.get("base_url", "https://api.elydora.com"),
+        sources = read_sources()
+        paths = preflight_copilot_installation(config, sources)
+        rendered = _render_installation(
+            sources,
+            paths.guard_path,
+            paths.audit_path,
         )
-        candidates: List[Optional[FileChange]] = [
-            file_change(
-                os.path.join(agent_directory, "config.json"),
-                "Elydora runtime config",
-                _json_source(_runtime_config(config, agent_id)),
-                0o600,
-            ),
-            file_change(
-                os.path.join(agent_directory, "private.key"),
-                "Elydora private key",
-                config.get("private_key", ""),
-                0o600,
-            ),
-            file_change(
-                audit_path,
-                "Elydora audit runtime",
-                audit_script,
-                0o700,
-            ),
-        ]
-        changes = [change for change in candidates if change is not None]
-        changes.extend(_rendered_changes(sources, user_hooks))
-        write_changes(changes, "Install GitHub Copilot hooks")
+        prepared = prepare_copilot_installation(config, sources, rendered)
+        commit_copilot_installation(prepared)
         print(f"GitHub Copilot CLI hooks: {sources.user.file_path}")
+        print(
+            "GitHub Copilot CLI: restart active sessions to load updated hooks."
+        )
 
     def uninstall(self, agent_id: str = "") -> None:
-        sources = read_sources(_home_dir())
-        user_hooks = remove_managed_hooks(
-            sources.user.hooks,
-            ELYDORA_DIR,
-            agent_id,
-        )
-        changes = _rendered_changes(sources, user_hooks, agent_id)
-        write_changes(changes, "Uninstall GitHub Copilot hooks")
+        sources = read_sources()
+        rendered = _render_uninstall(sources, agent_id)
+        commit_copilot_uninstall(prepare_copilot_uninstall(rendered))
 
     def status(self) -> PluginStatus:
-        sources = read_sources(_home_dir())
-        contracts = _contracts(sources)
-        if not contracts:
-            return PluginStatus(
-                installed=False,
-                agent=AGENT_KEY,
-                details="Not installed",
-            )
-        installed = runtime_files_exist(contracts)
-        config_path = _configured_path(sources, contracts)
+        sources = read_sources()
+        contracts = _merged_contracts(sources)
+        configured = sources.disabled_by is None and bool(contracts)
+        installed = configured and runtime_files_exist(contracts)
         details = (
-            f"Config: {config_path}"
+            f"Config: {sources.user.file_path}"
             if installed
-            else f"Configured at {config_path}; runtime scripts missing"
+            else (
+                f"Configured at {sources.user.file_path}; "
+                "managed contract incomplete"
+            )
         )
         return PluginStatus(
             installed=installed,
             agent=AGENT_KEY,
-            details=details,
+            details=details if contracts else "Not installed",
         )

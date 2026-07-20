@@ -1,183 +1,39 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
-from typing import Any
 
 import pytest
 
 from elydora import cli
-from elydora.plugins import _transaction, copilot
-from elydora.plugins.base import InstallConfig
+from elydora.plugins import copilot
 from elydora.plugins.registry import SUPPORTED_AGENTS
 
-
-AGENT_ID = "agent-1"
-MISSING = object()
-
-
-@dataclass(frozen=True)
-class CopilotFixture:
-    plugin: copilot.CopilotPlugin
-    config: InstallConfig
-    home_dir: Path
-    copilot_home: Path
-    project_dir: Path
-    agent_dir: Path
-    config_path: Path
-    legacy_path: Path
-    guard_path: Path
-    hook_path: Path
-    runtime_config_path: Path
-    private_key_path: Path
+from copilot_support import (
+    AGENT_ID,
+    VALID_PRIVATE_KEY,
+    assert_native_handler,
+    assert_runtime_absent,
+    legacy_managed_config,
+    managed_handler,
+    prepare_fixture,
+    run_hook,
+    write_json_or_text,
+)
 
 
-def write_json_or_text(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    source = value if isinstance(value, str) else json.dumps(value, indent=2)
-    path.write_text(source, encoding="utf-8")
-
-
-def prepare_fixture(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    *,
-    user_config: object = MISSING,
-    legacy_config: object = MISSING,
-    create_guard: bool = True,
-) -> CopilotFixture:
-    home_dir = tmp_path / "home with spaces"
-    project_dir = tmp_path / "project with spaces"
-    copilot_home = home_dir / "custom copilot"
-    agent_dir = home_dir / ".elydora" / AGENT_ID
-    config_path = copilot_home / "hooks" / "elydora-audit.json"
-    legacy_path = project_dir / ".github" / "hooks" / "hooks.json"
-    guard_path = agent_dir / "guard.py"
-    hook_path = agent_dir / "hook.py"
-    agent_dir.mkdir(parents=True)
-    project_dir.mkdir(parents=True)
-    if create_guard:
-        guard_path.write_text(
-            "import sys\nsys.stdin.read()\n"
-            "sys.stderr.write('Agent is frozen by Elydora.')\n"
-            "raise SystemExit(2)\n",
-            encoding="utf-8",
-        )
-    if user_config is not MISSING:
-        write_json_or_text(config_path, user_config)
-    if legacy_config is not MISSING:
-        write_json_or_text(legacy_path, legacy_config)
-
-    monkeypatch.chdir(project_dir)
-    monkeypatch.setattr(copilot, "ELYDORA_DIR", str(agent_dir.parent))
-    monkeypatch.setattr(copilot, "_home_dir", lambda: str(home_dir), raising=False)
-    monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
-    config: InstallConfig = {
-        "agent_id": AGENT_ID,
-        "agent_name": "copilot",
-        "org_id": "org-1",
-        "private_key": "test-key",
-        "kid": "kid-1",
-        "base_url": "https://api.elydora.test",
-        "guard_script_path": str(guard_path),
-    }
-    return CopilotFixture(
-        plugin=copilot.CopilotPlugin(),
-        config=config,
-        home_dir=home_dir,
-        copilot_home=copilot_home,
-        project_dir=project_dir,
-        agent_dir=agent_dir,
-        config_path=config_path,
-        legacy_path=legacy_path,
-        guard_path=guard_path,
-        hook_path=hook_path,
-        runtime_config_path=agent_dir / "config.json",
-        private_key_path=agent_dir / "private.key",
-    )
-
-
-def managed_handler(
-    settings: dict[str, Any], event: str, script_name: str
-) -> dict[str, Any]:
-    for handler in settings.get("hooks", {}).get(event, []):
-        if script_name in str(handler.get("bash")):
-            return handler
-    raise AssertionError(f"managed {event} handler not found")
-
-
-def assert_native_handler(handler: dict[str, Any]) -> None:
-    assert set(handler) == {"type", "bash", "powershell", "timeoutSec"}
-    assert handler["type"] == "command"
-    assert handler["timeoutSec"] == 10
-    assert Path(sys.executable).name in handler["bash"]
-    assert handler["powershell"].startswith("& ")
-    assert handler["powershell"].endswith("; exit $LASTEXITCODE")
-
-
-def legacy_managed_config(
-    fixture: CopilotFixture,
-    extra_hooks: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return {
-        "version": 1,
-        "hooks": {
-            "preToolUse": [{
-                "type": "command",
-                "bash": f'"{sys.executable}" {fixture.guard_path}',
-                "powershell": f'"{sys.executable}" {fixture.guard_path}',
-                "timeoutSec": 5,
-            }],
-            "postToolUse": [{
-                "type": "command",
-                "bash": str(fixture.hook_path),
-                "powershell": str(fixture.hook_path),
-                "timeoutSec": 5,
-            }],
-            **(extra_hooks or {}),
-        },
-    }
-
-
-def run_hook(
-    handler: dict[str, Any],
-    home_dir: Path,
-    payload: str,
-) -> subprocess.CompletedProcess[str]:
-    if os.name == "nt":
-        command = [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            handler["powershell"],
-        ]
-    else:
-        command = ["/bin/sh", "-c", handler["bash"]]
-    return subprocess.run(
-        command,
-        capture_output=True,
-        check=False,
-        env={**os.environ, "HOME": str(home_dir), "USERPROFILE": str(home_dir)},
-        input=payload,
-        text=True,
-    )
-
-
-def test_copilot_is_registered_with_native_user_hooks() -> None:
+def test_copilot_is_registered_with_complete_native_contract() -> None:
     assert SUPPORTED_AGENTS["copilot"] == {
         "name": "GitHub Copilot CLI",
-        "hook_event": "preToolUse/postToolUse",
+        "hook_event": "preToolUse/postToolUse/postToolUseFailure",
         "config_path": "~/.copilot/hooks/elydora-audit.json",
     }
     assert cli.PLUGIN_MAP["copilot"] is copilot.CopilotPlugin
+    assert copilot.CopilotPlugin.manages_guard_runtime is True
 
 
-def test_install_preserves_user_hooks_migrates_legacy_and_is_idempotent(
+def test_install_preserves_hooks_migrates_legacy_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -188,15 +44,21 @@ def test_install_preserves_user_hooks_migrates_legacy_and_is_idempotent(
             "version": 1,
             "disableAllHooks": False,
             "hooks": {
-                "sessionStart": [{"type": "command", "command": "user-session"}],
-                "preToolUse": [{"type": "command", "command": "user-pre"}],
+                "sessionStart": [
+                    {"type": "command", "command": "user-session"}
+                ],
+                "preToolUse": [
+                    {"type": "command", "command": "user-pre"}
+                ],
             },
         },
     )
     write_json_or_text(
         fixture.legacy_path,
         legacy_managed_config(fixture, {
-            "notification": [{"type": "command", "command": "user-notification"}],
+            "notification": [
+                {"type": "command", "command": "user-notification"}
+            ],
         }),
     )
 
@@ -214,18 +76,32 @@ def test_install_preserves_user_hooks_migrates_legacy_and_is_idempotent(
     }
     assert len(settings["hooks"]["preToolUse"]) == 2
     assert len(settings["hooks"]["postToolUse"]) == 1
+    assert len(settings["hooks"]["postToolUseFailure"]) == 1
     assert_native_handler(managed_handler(settings, "preToolUse", "guard.py"))
     assert_native_handler(managed_handler(settings, "postToolUse", "hook.py"))
+    assert_native_handler(
+        managed_handler(settings, "postToolUseFailure", "hook.py")
+    )
     legacy = json.loads(fixture.legacy_path.read_text(encoding="utf-8"))
     assert legacy == {
         "version": 1,
         "hooks": {
-            "notification": [{"type": "command", "command": "user-notification"}],
+            "notification": [
+                {"type": "command", "command": "user-notification"}
+            ],
         },
     }
-    assert fixture.runtime_config_path.is_file()
-    assert fixture.private_key_path.read_text(encoding="utf-8") == "test-key"
+    runtime = json.loads(
+        fixture.runtime_config_path.read_text(encoding="utf-8")
+    )
+    assert runtime["agent_id"] == AGENT_ID
+    assert runtime["agent_name"] == "copilot"
+    assert fixture.private_key_path.read_text(encoding="utf-8") == (
+        VALID_PRIVATE_KEY
+    )
+    assert fixture.guard_path.is_file()
     assert fixture.hook_path.is_file()
+    assert fixture.plugin.status()["installed"] is True
 
 
 def test_migration_removes_legacy_file_owned_entirely_by_elydora(
@@ -242,43 +118,55 @@ def test_migration_removes_legacy_file_owned_entirely_by_elydora(
     assert_native_handler(managed_handler(settings, "preToolUse", "guard.py"))
 
 
-def test_commands_block_and_forward_native_payload_byte_for_byte(
+def test_commands_block_and_forward_success_and_failure_payloads(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     fixture = prepare_fixture(monkeypatch, tmp_path)
     fixture.plugin.install(fixture.config)
     capture_path = tmp_path / "captured-event.json"
+    fixture.guard_path.write_text(
+        "import sys\nsys.stdin.read()\n"
+        "sys.stderr.write('Agent is frozen by Elydora.')\n"
+        "raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
     fixture.hook_path.write_text(
         "from pathlib import Path\nimport sys\n"
         f"Path({str(capture_path)!r}).write_text(sys.stdin.read(), encoding='utf-8')\n",
         encoding="utf-8",
     )
     settings = json.loads(fixture.config_path.read_text(encoding="utf-8"))
-    pre_payload = json.dumps({
+    base = {
         "sessionId": "session-1",
         "timestamp": 1,
         "cwd": str(fixture.project_dir),
         "toolName": "powershell",
         "toolArgs": {"command": "Get-ChildItem"},
-    }, separators=(",", ":"))
+    }
+    pre_payload = json.dumps(base, separators=(",", ":"))
     guard = managed_handler(settings, "preToolUse", "guard.py")
-    guard_result = run_hook(guard, fixture.home_dir, pre_payload)
+    guard_result = run_hook(guard, fixture, pre_payload)
     assert guard_result.returncode == 2, guard_result.stderr
     assert "Agent is frozen by Elydora" in guard_result.stderr
 
-    post_payload = json.dumps({
-        "sessionId": "session-1",
-        "timestamp": 2,
-        "cwd": str(fixture.project_dir),
-        "toolName": "powershell",
-        "toolArgs": {"command": "Get-ChildItem"},
-        "toolResult": {"output": "ok"},
-    }, separators=(",", ":"))
-    audit = managed_handler(settings, "postToolUse", "hook.py")
-    audit_result = run_hook(audit, fixture.home_dir, post_payload)
-    assert audit_result.returncode == 0, audit_result.stderr
-    assert capture_path.read_text(encoding="utf-8") == post_payload
+    success_payload = json.dumps(
+        {**base, "toolResult": {"resultType": "success", "textResultForLlm": "ok"}},
+        separators=(",", ":"),
+    )
+    success = managed_handler(settings, "postToolUse", "hook.py")
+    success_result = run_hook(success, fixture, success_payload)
+    assert success_result.returncode == 0, success_result.stderr
+    assert capture_path.read_text(encoding="utf-8") == success_payload
+
+    failure_payload = json.dumps(
+        {**base, "error": "command failed"},
+        separators=(",", ":"),
+    )
+    failure = managed_handler(settings, "postToolUseFailure", "hook.py")
+    failure_result = run_hook(failure, fixture, failure_payload)
+    assert failure_result.returncode == 0, failure_result.stderr
+    assert capture_path.read_text(encoding="utf-8") == failure_payload
 
 
 def test_empty_home_override_uses_official_default(
@@ -287,32 +175,192 @@ def test_empty_home_override_uses_official_default(
 ) -> None:
     fixture = prepare_fixture(monkeypatch, tmp_path)
     monkeypatch.setenv("COPILOT_HOME", "")
+
     fixture.plugin.install(fixture.config)
+
     default_path = fixture.home_dir / ".copilot" / "hooks" / "elydora-audit.json"
     settings = json.loads(default_path.read_text(encoding="utf-8"))
     assert_native_handler(managed_handler(settings, "preToolUse", "guard.py"))
     assert str(default_path) in fixture.plugin.status()["details"]
 
 
-def test_status_requires_complete_pair_and_valid_runtime_identity(
+def test_status_requires_complete_contract_and_exact_runtime_sources(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     fixture = prepare_fixture(monkeypatch, tmp_path)
     fixture.plugin.install(fixture.config)
     assert fixture.plugin.status()["installed"] is True
+
     settings = json.loads(fixture.config_path.read_text(encoding="utf-8"))
-    del settings["hooks"]["postToolUse"]
+    del settings["hooks"]["postToolUseFailure"]
     write_json_or_text(fixture.config_path, settings)
     assert fixture.plugin.status()["installed"] is False
 
     fixture.plugin.install(fixture.config)
+    fixture.guard_path.write_text("# tampered\n", encoding="utf-8")
+    assert fixture.plugin.status()["installed"] is False
+
+    fixture.plugin.install(fixture.config)
+    valid_runtime = fixture.runtime_config_path.read_text(encoding="utf-8")
     fixture.runtime_config_path.write_text("{ malformed", encoding="utf-8")
-    with pytest.raises(ValueError, match="parse Elydora runtime config"):
+    with pytest.raises(ValueError, match="runtime config"):
+        fixture.plugin.status()
+
+    fixture.runtime_config_path.write_text(valid_runtime, encoding="utf-8")
+    fixture.private_key_path.write_text("invalid", encoding="utf-8")
+    with pytest.raises(ValueError, match="private key"):
         fixture.plugin.status()
 
 
-def test_uninstall_removes_exact_ownership_and_preserves_user_entries(
+def test_settings_precedence_allows_later_false_and_preserves_jsonc(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    user_source = "{\n  // user policy\n  \"disableAllHooks\": true,\n}\n"
+    claude_source = "{\n  \"disableAllHooks\": true,\n}\n"
+    repository_source = "{\n  \"disableAllHooks\": false,\n}\n"
+    fixture = prepare_fixture(
+        monkeypatch,
+        tmp_path,
+        user_settings=user_source,
+        claude_local_settings=claude_source,
+        repository_settings=repository_source,
+    )
+
+    fixture.plugin.install(fixture.config)
+
+    assert fixture.user_settings_path.read_text(encoding="utf-8") == user_source
+    assert fixture.claude_local_settings_path.read_text(
+        encoding="utf-8"
+    ) == claude_source
+    assert fixture.repository_settings_path.read_text(
+        encoding="utf-8"
+    ) == repository_source
+    assert fixture.plugin.status()["installed"] is True
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "source_name"),
+    [
+        ({"repository_settings": {"disableAllHooks": True}}, "repository"),
+        (
+            {
+                "claude_local_settings": {"disableAllHooks": True},
+                "repository_settings": {"disableAllHooks": True},
+            },
+            "repository",
+        ),
+    ],
+)
+def test_effective_disabled_settings_block_before_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kwargs: dict[str, object],
+    source_name: str,
+) -> None:
+    fixture = prepare_fixture(monkeypatch, tmp_path, **kwargs)
+    with pytest.raises(ValueError, match=source_name):
+        fixture.plugin.install(fixture.config)
+    assert fixture.config_path.exists() is False
+    assert_runtime_absent(fixture)
+
+
+def test_managed_file_disable_flag_remains_authoritative(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fixture = prepare_fixture(
+        monkeypatch,
+        tmp_path,
+        user_config={"version": 1, "disableAllHooks": True, "hooks": {}},
+        local_settings={"disableAllHooks": False},
+    )
+    with pytest.raises(ValueError, match="user hooks"):
+        fixture.plugin.install(fixture.config)
+    assert_runtime_absent(fixture)
+
+
+def test_matchers_use_official_javascript_regular_expression_syntax(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fixture = prepare_fixture(
+        monkeypatch,
+        tmp_path,
+        user_config={
+            "version": 1,
+            "hooks": {
+                "preToolUse": [{
+                    "type": "command",
+                    "command": "user-pre",
+                    "matcher": "(?<tool>shell)",
+                }],
+            },
+        },
+    )
+
+    fixture.plugin.install(fixture.config)
+
+    settings = json.loads(fixture.config_path.read_text(encoding="utf-8"))
+    assert settings["hooks"]["preToolUse"][0]["matcher"] == (
+        "(?<tool>shell)"
+    )
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        "{ malformed",
+        '{"version":1,"version":1,"hooks":{}}',
+        {"hooks": {}},
+        {"version": True, "hooks": {}},
+        {"version": 1, "hooks": None},
+        {"version": 1, "hooks": {"unknownEvent": []}},
+        {"version": 1, "hooks": {"preToolUse": None}},
+        {"version": 1, "hooks": {"preToolUse": [None]}},
+        {"version": 1, "hooks": {"preToolUse": [{}]}},
+        {"version": 1, "hooks": {"preToolUse": [{"command": 1}]}},
+        {"version": 1, "hooks": {"preToolUse": [{"command": "x", "timeoutSec": 0}]}},
+        {"version": 1, "hooks": {"preToolUse": [{"command": "x", "matcher": "["}]}},
+        {"version": 1, "hooks": {"postToolUse": [{"type": "prompt", "prompt": "x"}]}},
+        {"version": 1, "hooks": {"postToolUse": [{"type": "http", "url": "http://example.com"}]}},
+    ],
+)
+def test_invalid_hook_documents_are_preserved_before_runtime_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    existing: object,
+) -> None:
+    fixture = prepare_fixture(monkeypatch, tmp_path, user_config=existing)
+    original = fixture.config_path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError):
+        fixture.plugin.install(fixture.config)
+    assert fixture.config_path.read_text(encoding="utf-8") == original
+    assert_runtime_absent(fixture)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        "{ malformed",
+        '{"disableAllHooks":true,"disableAllHooks":false}',
+        '{"disableAllHooks":"yes"}',
+    ],
+)
+def test_invalid_settings_are_preserved_before_runtime_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    settings: str,
+) -> None:
+    fixture = prepare_fixture(monkeypatch, tmp_path, user_settings=settings)
+    with pytest.raises(ValueError):
+        fixture.plugin.install(fixture.config)
+    assert fixture.user_settings_path.read_text(encoding="utf-8") == settings
+    assert_runtime_absent(fixture)
+
+
+def test_uninstall_removes_exact_ownership_and_preserves_adjacent_handlers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -328,8 +376,8 @@ def test_uninstall_removes_exact_ownership_and_preserves_user_entries(
     settings = json.loads(fixture.config_path.read_text(encoding="utf-8"))
     settings["hooks"]["preToolUse"].append({
         "type": "command",
-        "bash": f"{sys.executable} {fixture.agent_dir.parent / 'agent-10' / 'guard.py'}",
-        "powershell": "user-decoy",
+        "bash": "user-pre",
+        "powershell": "user-pre",
         "timeoutSec": 10,
     })
     write_json_or_text(fixture.config_path, settings)
@@ -340,9 +388,14 @@ def test_uninstall_removes_exact_ownership_and_preserves_user_entries(
     assert remaining["hooks"]["notification"] == [
         {"type": "command", "command": "keep"}
     ]
+    assert remaining["hooks"]["preToolUse"] == [{
+        "type": "command",
+        "bash": "user-pre",
+        "powershell": "user-pre",
+        "timeoutSec": 10,
+    }]
     assert "postToolUse" not in remaining["hooks"]
-    assert len(remaining["hooks"]["preToolUse"]) == 1
-    assert "agent-10" in remaining["hooks"]["preToolUse"][0]["bash"]
+    assert "postToolUseFailure" not in remaining["hooks"]
 
 
 def test_uninstall_leaves_absent_sources_absent(
@@ -355,85 +408,14 @@ def test_uninstall_leaves_absent_sources_absent(
     assert fixture.legacy_path.exists() is False
 
 
-@pytest.mark.parametrize(
-    "existing",
-    [
-        "{ malformed",
-        {"hooks": {}},
-        {"version": 2, "hooks": {}},
-        {"version": 1, "hooks": None},
-        {"version": 1, "hooks": {"preToolUse": None}},
-        {"version": 1, "hooks": {"preToolUse": [None]}},
-    ],
-)
-def test_invalid_config_is_preserved_before_runtime_writes(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    existing: object,
-) -> None:
-    fixture = prepare_fixture(monkeypatch, tmp_path, user_config=existing)
-    original = fixture.config_path.read_text(encoding="utf-8")
-    with pytest.raises((ValueError, json.JSONDecodeError)):
-        fixture.plugin.install(fixture.config)
-    assert fixture.config_path.read_text(encoding="utf-8") == original
-    assert fixture.runtime_config_path.exists() is False
-    assert fixture.private_key_path.exists() is False
-    assert fixture.hook_path.exists() is False
-
-
-def test_missing_guard_is_rejected_before_creating_files(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    fixture = prepare_fixture(monkeypatch, tmp_path, create_guard=False)
-    with pytest.raises(FileNotFoundError, match="guard runtime is missing"):
-        fixture.plugin.install(fixture.config)
-    assert fixture.config_path.exists() is False
-    assert fixture.runtime_config_path.exists() is False
-    assert fixture.private_key_path.exists() is False
-    assert fixture.hook_path.exists() is False
-
-
-def test_transaction_rolls_back_every_file_after_commit_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    fixture = prepare_fixture(
-        monkeypatch,
-        tmp_path,
-        user_config={"version": 1, "hooks": {"notification": []}},
-        legacy_config={"version": 1, "hooks": {"sessionStart": []}},
-    )
-    user_before = fixture.config_path.read_text(encoding="utf-8")
-    legacy_before = fixture.legacy_path.read_text(encoding="utf-8")
-    original_commit = _transaction._commit
-    commits = 0
-
-    def fail_after_first_commit(staged: Any) -> None:
-        nonlocal commits
-        original_commit(staged)
-        commits += 1
-        if commits == 1:
-            raise OSError("injected commit failure")
-
-    monkeypatch.setattr(_transaction, "_commit", fail_after_first_commit)
-    with pytest.raises(OSError, match="injected commit failure"):
-        fixture.plugin.install(fixture.config)
-    assert fixture.config_path.read_text(encoding="utf-8") == user_before
-    assert fixture.legacy_path.read_text(encoding="utf-8") == legacy_before
-    assert fixture.runtime_config_path.exists() is False
-    assert fixture.private_key_path.exists() is False
-    assert fixture.hook_path.exists() is False
-
-
-def test_atomic_writes_leave_no_transaction_files(
+def test_preflight_validates_credentials_and_runtime_path_without_writes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     fixture = prepare_fixture(monkeypatch, tmp_path)
-    fixture.plugin.install(fixture.config)
-    for directory in (fixture.agent_dir, fixture.config_path.parent):
-        assert all(
-            path.suffix not in {".tmp", ".rollback"}
-            for path in directory.iterdir()
-        )
+    invalid = dict(fixture.config)
+    invalid["private_key"] = "invalid"
+    with pytest.raises(ValueError, match="private_key"):
+        fixture.plugin.preflight_install(invalid)  # type: ignore[arg-type]
+    assert fixture.config_path.exists() is False
+    assert_runtime_absent(fixture)

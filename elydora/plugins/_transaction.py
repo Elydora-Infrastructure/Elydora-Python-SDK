@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import tempfile
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, cast
 from uuid import uuid4
 
 from ._managed_files import (
@@ -30,6 +30,14 @@ class FileChange:
     maximum_bytes: int
 
 
+@dataclass(frozen=True)
+class FilePrecondition:
+    file_path: str
+    label: str
+    original: Optional[FileSnapshot]
+    maximum_bytes: int = MAX_SOURCE_BYTES
+
+
 @dataclass
 class _StagedChange:
     change: FileChange
@@ -37,6 +45,22 @@ class _StagedChange:
     rollback_path: Optional[str]
     committed_snapshot: Optional[FileSnapshot] = None
     committed: bool = False
+
+
+_EXPECTED_SNAPSHOT_UNSET = object()
+
+
+def _same_snapshot(
+    current: Optional[FileSnapshot],
+    expected: Optional[FileSnapshot],
+) -> bool:
+    if current is None or expected is None:
+        return current is expected
+    return (
+        current.contents == expected.contents
+        and current.device == expected.device
+        and current.inode == expected.inode
+    )
 
 
 def read_optional(
@@ -55,6 +79,7 @@ def source_change(
     next_source: Optional[str],
     mode: int,
     maximum_bytes: int = MAX_SOURCE_BYTES,
+    expected_snapshot: object = _EXPECTED_SNAPSHOT_UNSET,
 ) -> Optional[FileChange]:
     if original == next_source:
         return None
@@ -69,6 +94,10 @@ def source_change(
     current = None if snapshot is None else snapshot.contents
     if current != original:
         raise OSError(f"{label} changed before staging: {file_path}")
+    if expected_snapshot is not _EXPECTED_SNAPSHOT_UNSET:
+        expected = cast(Optional[FileSnapshot], expected_snapshot)
+        if not _same_snapshot(snapshot, expected):
+            raise OSError(f"{label} changed before staging: {file_path}")
     return FileChange(
         file_path,
         label,
@@ -168,6 +197,23 @@ def _assert_unchanged(change: FileChange) -> None:
     )
     if current != change.original or identity_changed:
         raise OSError(f"{change.label} changed during installation: {change.file_path}")
+
+
+def _assert_preconditions(
+    preconditions: Sequence[FilePrecondition],
+    operation: str,
+) -> None:
+    for condition in preconditions:
+        current = read_physical_file(
+            condition.file_path,
+            condition.label,
+            condition.maximum_bytes,
+        )
+        if not _same_snapshot(current, condition.original):
+            raise OSError(
+                f"{condition.label} changed during {operation}: "
+                f"{condition.file_path}"
+            )
 
 
 def _stage(change: FileChange) -> _StagedChange:
@@ -302,7 +348,11 @@ def _cleanup(staged: _StagedChange) -> None:
     _remove_optional(staged.rollback_path)
 
 
-def write_changes(changes: Sequence[FileChange], label: str) -> None:
+def write_changes(
+    changes: Sequence[FileChange],
+    label: str,
+    preconditions: Sequence[FilePrecondition] = (),
+) -> None:
     filtered = [change for change in changes if change.original != change.next_source]
     if not filtered:
         return
@@ -311,10 +361,14 @@ def write_changes(changes: Sequence[FileChange], label: str) -> None:
         raise ValueError(f"{label} contains duplicate file targets")
     staged: List[_StagedChange] = []
     try:
+        _assert_preconditions(preconditions, label)
         for change in filtered:
             staged.append(_stage(change))
+        _assert_preconditions(preconditions, label)
         for item in staged:
+            _assert_preconditions(preconditions, label)
             _commit(item)
+        _assert_preconditions(preconditions, label)
     except Exception as error:
         recovery_errors = []
         for item in reversed(staged):

@@ -390,9 +390,9 @@ def test_legacy_plugins_persist_one_owner_only_private_key(
     runtime_root = case_root / ".elydora"
     guard_path = runtime_root / "agent-1" / "guard.py"
     guard_path.parent.mkdir(parents=True)
-    if module is not cursor:
+    if module not in (cursor, copilot):
         guard_path.write_text("pass\n", encoding="utf-8")
-    if module is cursor:
+    if module in (cursor, copilot):
         monkeypatch.setenv("HOME", str(case_root))
         monkeypatch.setenv("USERPROFILE", str(case_root))
     else:
@@ -410,6 +410,7 @@ def test_legacy_plugins_persist_one_owner_only_private_key(
         monkeypatch.setattr(module, "PLUGIN_DIR", str(case_root / "plugins"))
     elif module is copilot:
         case_root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("COPILOT_HOME", str(case_root / ".copilot"))
         monkeypatch.chdir(case_root)
 
     plugin_type().install(
