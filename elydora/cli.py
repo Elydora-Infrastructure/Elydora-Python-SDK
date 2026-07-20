@@ -204,21 +204,7 @@ def cmd_install(args: argparse.Namespace) -> None:
 
     print(f"Verified key pair (public key: {pub[:16]}...)")
 
-    # Create per-agent directory under ~/.elydora/{agent_id}/
-    ensure_private_directory(_runtime_root())
-    ensure_private_directory(agent_dir)
-
-    # Generate and write the guard script
     guard_script_path = os.path.join(agent_dir, "guard.py")
-    guard_script = generate_guard_script(agent_name, args.agent_id)
-    write_text_atomic(
-        guard_script_path,
-        guard_script,
-        0o700,
-        "Elydora guard runtime",
-    )
-    print(f"  Guard script: {guard_script_path}")
-
     config: InstallConfig = {
         "org_id": args.org_id,
         "agent_id": args.agent_id,
@@ -230,8 +216,24 @@ def cmd_install(args: argparse.Namespace) -> None:
     }
     if secrets.token:
         config["token"] = secrets.token
+    plugin.preflight_install(config)
+
+    # Create per-agent directory under ~/.elydora/{agent_id}/
+    ensure_private_directory(_runtime_root())
+    ensure_private_directory(agent_dir)
+
+    # Generate and write the guard script for adapters that use the shared runtime.
+    if not plugin.manages_guard_runtime:
+        guard_script = generate_guard_script(agent_name, args.agent_id)
+        write_text_atomic(
+            guard_script_path,
+            guard_script,
+            0o700,
+            "Elydora guard runtime",
+        )
 
     plugin.install(config)
+    print(f"  Guard script: {guard_script_path}")
 
 
 def cmd_uninstall(args: argparse.Namespace) -> None:

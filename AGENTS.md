@@ -22,6 +22,7 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 - Forward official hook JSON from STDIN without reshaping provider fields.
 - Use the provider's documented blocking mechanism. Command-hook providers that define exit code `2` must receive exit code `2` from the freeze guard.
 - Report installation as healthy only when a complete hook contract references both generated runtime scripts and both scripts exist.
+- Write Cursor hooks only to `~/.cursor/hooks.json`; keep project and enterprise sources read-only. Preserve user hooks, migrate the prior versionless Elydora contract, use exact native command ownership, retain PowerShell exit code `2`, and set security-critical handlers to `failClosed` with a bounded timeout.
 - Model stable, legacy, and early-access hook generations as explicit contracts. Keep their activation requirements visible in CLI output and README guidance.
 - Select Kimi Code and legacy kimi-cli config targets from existing runtime evidence; a fresh installation targets current Kimi Code and keeps migration markers isolated to active runtimes.
 - Keep Grok Build writes inside its native global `$GROK_HOME/hooks/*.json` contract. Treat Claude Code and Cursor compatibility files plus project `.grok/hooks` as read-only integration sources.

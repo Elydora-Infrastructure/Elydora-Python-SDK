@@ -33,7 +33,7 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "cursor": {
         "name": "Cursor",
-        "hook_event": "PostToolUse",
+        "hook_event": "PreToolUse/PostToolUse",
         "config_path": "~/.cursor/hooks.json",
     },
     "droid": {

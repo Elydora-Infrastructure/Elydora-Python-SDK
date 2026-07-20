@@ -32,6 +32,11 @@ class PluginStatus(TypedDict):
 class AgentPlugin(ABC):
     """Base class for all agent plugins."""
 
+    manages_guard_runtime = False
+
+    def preflight_install(self, config: InstallConfig) -> None:
+        """Validate provider sources before the CLI creates runtime files."""
+
     @abstractmethod
     def install(self, config: InstallConfig) -> None:
         """Install the Elydora hook for this agent."""

@@ -16,6 +16,7 @@ def generate_hook_script(
     agent_id: str,
     kid: str,
     base_url: str,
+    success_output: str = "",
 ) -> str:
     """Return a complete, self-contained Python hook script as a string.
 
@@ -49,6 +50,7 @@ ORG_ID = {org_id!r}
 AGENT_ID = {agent_id!r}
 KID = {kid!r}
 BASE_URL = {base_url!r}
+SUCCESS_OUTPUT = {success_output!r}
 
 ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
 PRIVATE_KEY_PATH = os.path.join(ELYDORA_DIR, AGENT_ID, "private.key")
@@ -341,10 +343,16 @@ def main():
 
 if __name__ == "__main__":
     main()
+    if SUCCESS_OUTPUT:
+        sys.stdout.write(SUCCESS_OUTPUT)
 '''
 
 
-def generate_guard_script(agent_name: str, agent_id: str) -> str:
+def generate_guard_script(
+    agent_name: str,
+    agent_id: str,
+    success_output: str = "",
+) -> str:
     """Return a self-contained Python guard script for PreToolUse freeze enforcement.
 
     The script:
@@ -367,6 +375,7 @@ import time
 
 AGENT_NAME = {agent_name!r}
 AGENT_ID = {agent_id!r}
+SUCCESS_OUTPUT = {success_output!r}
 ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
 CONFIG_PATH = os.path.join(ELYDORA_DIR, AGENT_ID, "config.json")
 STATUS_CACHE_PATH = os.path.join(ELYDORA_DIR, AGENT_ID, "status-cache.json")
@@ -444,4 +453,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+    if SUCCESS_OUTPUT:
+        sys.stdout.write(SUCCESS_OUTPUT)
 '''

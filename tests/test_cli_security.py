@@ -249,7 +249,13 @@ def test_cli_reads_credentials_from_files_before_installing(
     installed: list[dict[str, str]] = []
 
     class Plugin:
+        manages_guard_runtime = False
+
+        def preflight_install(self, config: dict[str, str]) -> None:
+            assert Path(config["guard_script_path"]).exists() is False
+
         def install(self, config: dict[str, str]) -> None:
+            assert Path(config["guard_script_path"]).is_file()
             installed.append(config)
 
     monkeypatch.setattr(cli, "_get_plugin", lambda _name: Plugin())
@@ -279,6 +285,41 @@ def test_cli_reads_credentials_from_files_before_installing(
     assert guard_path.is_file()
     if os.name != "nt":
         assert guard_path.stat().st_mode & 0o777 == 0o700
+
+
+def test_cursor_cli_preflight_rejects_config_before_runtime_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    private_key_file = tmp_path / "private.key"
+    write_secret(private_key_file, PRIVATE_KEY)
+    home_dir = tmp_path / "home"
+    config_path = home_dir / ".cursor" / "hooks.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{ malformed", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("USERPROFILE", str(home_dir))
+    args = cli.build_parser().parse_args(
+        [
+            "install",
+            "--agent",
+            "cursor",
+            "--org_id",
+            "org-1",
+            "--agent_id",
+            "agent-1",
+            "--private_key_file",
+            str(private_key_file),
+            "--kid",
+            "key-1",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="parse Cursor user hooks"):
+        cli.cmd_install(args)
+
+    assert config_path.read_text(encoding="utf-8") == "{ malformed"
+    assert (home_dir / ".elydora").exists() is False
 
 
 def test_generated_hook_reads_private_key_from_private_file(
@@ -353,7 +394,11 @@ def test_legacy_plugins_persist_one_owner_only_private_key(
     guard_path = runtime_root / "agent-1" / "guard.py"
     guard_path.parent.mkdir(parents=True)
     guard_path.write_text("pass\n", encoding="utf-8")
-    monkeypatch.setattr(module, "ELYDORA_DIR", str(runtime_root))
+    if module is cursor:
+        monkeypatch.setenv("HOME", str(case_root))
+        monkeypatch.setenv("USERPROFILE", str(case_root))
+    else:
+        monkeypatch.setattr(module, "ELYDORA_DIR", str(runtime_root))
 
     if hasattr(module, "SETTINGS_PATH"):
         monkeypatch.setattr(
