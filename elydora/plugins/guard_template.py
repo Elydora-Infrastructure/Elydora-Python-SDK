@@ -13,6 +13,7 @@ def generate_guard_script(
     success_output: str = "",
     *,
     fail_closed: bool = False,
+    deny_protocol: str = "",
 ) -> str:
     """Return a self-contained status guard for a command-hook provider."""
     return f'''#!{sys.executable}
@@ -32,6 +33,7 @@ AGENT_NAME = {agent_name!r}
 AGENT_ID = {agent_id!r}
 SUCCESS_OUTPUT = {success_output!r}
 FAIL_CLOSED = {fail_closed!r}
+DENY_PROTOCOL = {deny_protocol!r}
 ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
 CONFIG_PATH = os.path.join(ELYDORA_DIR, AGENT_ID, "config.json")
 STATUS_CACHE_PATH = os.path.join(ELYDORA_DIR, AGENT_ID, "status-cache.json")
@@ -49,11 +51,17 @@ def validate_status(value, source):
 def block_agent(status):
     state = "frozen" if status == "frozen" else "revoked"
     message = 'Agent "' + AGENT_NAME + '" is ' + state + " in Elydora."
-    if SUCCESS_OUTPUT:
+    if DENY_PROTOCOL == "cursor":
         sys.stdout.write(json.dumps({{
             "permission": "deny",
             "userMessage": message,
             "agentMessage": message + " Tool execution is blocked.",
+        }}) + "\\n")
+        sys.stdout.flush()
+    elif DENY_PROTOCOL == "grok":
+        sys.stdout.write(json.dumps({{
+            "decision": "deny",
+            "reason": message,
         }}) + "\\n")
         sys.stdout.flush()
     sys.stderr.write("[Elydora guard] " + message + " Tool execution blocked.\\n")

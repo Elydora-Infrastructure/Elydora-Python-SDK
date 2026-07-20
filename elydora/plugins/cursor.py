@@ -178,6 +178,7 @@ class CursorPlugin(AgentPlugin):
             agent_id,
             success_output='{"permission":"allow"}\n',
             fail_closed=True,
+            deny_protocol="cursor",
         )
         changes = _present([
             runtime_change(

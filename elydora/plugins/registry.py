@@ -48,7 +48,7 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "grok": {
         "name": "Grok Build",
-        "hook_event": "PreToolUse/PostToolUse",
+        "hook_event": "PreToolUse/PostToolUse/PostToolUseFailure",
         "config_path": "~/.grok/hooks/elydora-audit.json",
     },
     "kirocli": {

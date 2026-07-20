@@ -9,6 +9,7 @@ from typing import List, Optional, Sequence
 from uuid import uuid4
 
 from ._managed_files import (
+    FileSnapshot,
     MAX_SOURCE_BYTES,
     ensure_physical_directory,
     physical_file_exists,
@@ -34,6 +35,7 @@ class _StagedChange:
     change: FileChange
     temporary_path: Optional[str]
     rollback_path: Optional[str]
+    committed_snapshot: Optional[FileSnapshot] = None
     committed: bool = False
 
 
@@ -56,6 +58,13 @@ def source_change(
 ) -> Optional[FileChange]:
     if original == next_source:
         return None
+    if (
+        next_source is not None
+        and len(next_source.encode("utf-8")) > maximum_bytes
+    ):
+        raise ValueError(
+            f"{label} exceeds {maximum_bytes} bytes: {file_path}"
+        )
     snapshot = read_physical_file(file_path, label, maximum_bytes)
     current = None if snapshot is None else snapshot.contents
     if current != original:
@@ -212,17 +221,80 @@ def _commit(staged: _StagedChange) -> None:
             raise OSError(f"Missing staged file for {staged.change.label}")
         os.replace(staged.temporary_path, staged.change.file_path)
     staged.committed = True
+    current = read_physical_file(
+        staged.change.file_path,
+        staged.change.label,
+        staged.change.maximum_bytes,
+    )
+    if staged.change.next_source is None:
+        if current is not None:
+            raise OSError(
+                f"{staged.change.label} remained after removal: "
+                f"{staged.change.file_path}"
+            )
+        return
+    if current is None or current.contents != staged.change.next_source:
+        raise OSError(
+            f"{staged.change.label} changed immediately after commit: "
+            f"{staged.change.file_path}"
+        )
+    staged.committed_snapshot = current
+
+
+def _assert_committed_unchanged(staged: _StagedChange) -> None:
+    current = read_physical_file(
+        staged.change.file_path,
+        staged.change.label,
+        staged.change.maximum_bytes,
+    )
+    if staged.change.next_source is None:
+        if current is not None:
+            raise OSError(
+                f"{staged.change.label} changed during transaction recovery: "
+                f"{staged.change.file_path}"
+            )
+        return
+    committed = staged.committed_snapshot
+    if current is None or committed is None or (
+        current.contents != committed.contents
+        or current.device != committed.device
+        or current.inode != committed.inode
+    ):
+        raise OSError(
+            f"{staged.change.label} changed during transaction recovery: "
+            f"{staged.change.file_path}"
+        )
+
+
+def _preserve_rollback(staged: _StagedChange, error: Exception) -> OSError:
+    if staged.rollback_path is None:
+        return error if isinstance(error, OSError) else OSError(str(error))
+    rollback_path = staged.rollback_path
+    staged.rollback_path = None
+    return OSError(
+        f"{error}; original content preserved at {rollback_path}"
+    )
 
 
 def _rollback(staged: _StagedChange) -> None:
     if not staged.committed:
         return
-    if staged.change.original is None:
-        _remove_optional(staged.change.file_path)
-        return
-    if staged.rollback_path is None:
-        raise OSError(f"Missing rollback data for {staged.change.label}")
-    os.replace(staged.rollback_path, staged.change.file_path)
+    try:
+        _assert_committed_unchanged(staged)
+    except Exception as error:
+        raise _preserve_rollback(staged, error) from error
+    try:
+        if staged.change.next_source is None or staged.change.original is not None:
+            if staged.rollback_path is None:
+                raise OSError(
+                    f"Missing rollback data for {staged.change.label}"
+                )
+            os.replace(staged.rollback_path, staged.change.file_path)
+            staged.rollback_path = None
+        else:
+            _remove_optional(staged.change.file_path)
+    except Exception as error:
+        raise _preserve_rollback(staged, error) from error
 
 
 def _cleanup(staged: _StagedChange) -> None:
@@ -248,7 +320,7 @@ def write_changes(changes: Sequence[FileChange], label: str) -> None:
         for item in reversed(staged):
             try:
                 _rollback(item)
-            except OSError as rollback_error:
+            except Exception as rollback_error:
                 recovery_errors.append(str(rollback_error))
         for item in staged:
             try:
