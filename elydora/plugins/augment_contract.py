@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 import os
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from ._strict_json import parse_json_object
 
 
 AGENT_KEY = "augment"
@@ -37,6 +40,14 @@ class AugmentDocument:
     config_path: str
     root: JsonObject
     hooks: AugmentHooks
+    raw: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class RenderedAugmentDocument:
+    document: AugmentDocument
+    changed: bool
+    next_source: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -66,8 +77,7 @@ def resolve_config_path() -> str:
     return os.path.join(home_dir(), ".augment", "settings.json")
 
 
-def wrapper_paths(agent_id: str) -> WrapperPaths:
-    agent_directory = os.path.join(elydora_dir(), agent_id)
+def wrapper_paths(agent_directory: str) -> WrapperPaths:
     return WrapperPaths(
         guard_path=os.path.join(agent_directory, GUARD_WRAPPER),
         audit_path=os.path.join(agent_directory, AUDIT_WRAPPER),
@@ -271,6 +281,34 @@ def read_hooks(root: JsonObject) -> AugmentHooks:
             for group_index, group in enumerate(groups)
         ]
     return hooks
+
+
+def parse_augment_document(config_path: str, raw: str) -> AugmentDocument:
+    root = parse_json_object(raw, f"Auggie user settings at {config_path}")
+    return AugmentDocument(True, config_path, root, read_hooks(root), raw)
+
+
+def create_augment_document(config_path: str) -> AugmentDocument:
+    return AugmentDocument(False, config_path, {}, {})
+
+
+def render_augment_document(
+    document: AugmentDocument, hooks: AugmentHooks
+) -> RenderedAugmentDocument:
+    if hooks == document.hooks:
+        return RenderedAugmentDocument(document, False)
+    if not document.exists and not hooks:
+        return RenderedAugmentDocument(document, False)
+    root = dict(document.root)
+    if hooks:
+        root["hooks"] = hooks
+    else:
+        root.pop("hooks", None)
+    if not root:
+        return RenderedAugmentDocument(document, True)
+    next_source = json.dumps(root, indent=2, ensure_ascii=False) + "\n"
+    parse_augment_document(document.config_path, next_source)
+    return RenderedAugmentDocument(document, next_source != document.raw, next_source)
 
 
 def _remove_managed(
