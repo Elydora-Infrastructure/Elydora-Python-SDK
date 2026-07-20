@@ -68,7 +68,7 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "letta": {
         "name": "Letta Code",
-        "hook_event": "PostToolUse",
+        "hook_event": "PreToolUse/PostToolUse/PostToolUseFailure",
         "config_path": "~/.letta/settings.json",
     },
     "opencode": {

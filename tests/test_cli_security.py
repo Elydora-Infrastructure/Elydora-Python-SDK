@@ -18,7 +18,6 @@ from elydora.plugins import (
     copilot,
     cursor,
     kiroide,
-    letta,
     opencode,
 )
 from elydora.plugins.hook_template import generate_hook_script
@@ -375,7 +374,6 @@ def test_atomic_secret_write_preserves_existing_file_on_replace_failure(
         (copilot, copilot.CopilotPlugin, "copilot"),
         (cursor, cursor.CursorPlugin, "cursor"),
         (kiroide, kiroide.KiroIdePlugin, "kiroide"),
-        (letta, letta.LettaPlugin, "letta"),
         (opencode, opencode.OpenCodePlugin, "opencode"),
     ],
 )

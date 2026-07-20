@@ -20,6 +20,7 @@ from ._runtime_paths import (
     require_physical_directory,
     require_physical_file,
     resolve_agent_directory,
+    runtime_root,
 )
 from .crypto import get_public_key_base64url
 from .plugins.base import AgentPlugin, InstallConfig
@@ -67,10 +68,6 @@ LEGACY_SECRET_OPTIONS = {
 }
 
 
-def _runtime_root() -> str:
-    return os.path.join(os.path.expanduser("~"), ".elydora")
-
-
 def _exit_with_error(message: str) -> NoReturn:
     print(f"Error: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -89,7 +86,7 @@ def _reject_legacy_secret_arguments(arguments: list[str]) -> None:
 
 def _resolve_agent_directory_or_exit(agent_id: str) -> str:
     try:
-        return resolve_agent_directory(_runtime_root(), agent_id)
+        return resolve_agent_directory(runtime_root(), agent_id)
     except ValueError as error:
         _exit_with_error(str(error))
 
@@ -149,13 +146,13 @@ def _read_installed_agent_or_exit(agent_id: str) -> Optional[_InstalledAgent]:
 
 
 def _discover_installed_agents_or_exit() -> list[_InstalledAgent]:
-    runtime_root = _runtime_root()
-    if not _require_physical_directory_or_exit(runtime_root):
+    root = runtime_root()
+    if not _require_physical_directory_or_exit(root):
         return []
 
     installed_agents: list[_InstalledAgent] = []
     try:
-        with os.scandir(runtime_root) as entries:
+        with os.scandir(root) as entries:
             for entry in entries:
                 if entry.is_symlink():
                     _exit_with_error(
@@ -167,7 +164,7 @@ def _discover_installed_agents_or_exit() -> list[_InstalledAgent]:
                 if installed_agent is not None:
                     installed_agents.append(installed_agent)
     except OSError as error:
-        _exit_with_error(f"Scan agent runtime root at {runtime_root}: {error}")
+        _exit_with_error(f"Scan agent runtime root at {root}: {error}")
     return installed_agents
 
 
@@ -219,7 +216,7 @@ def cmd_install(args: argparse.Namespace) -> None:
     plugin.preflight_install(config)
 
     # Create per-agent directory under ~/.elydora/{agent_id}/
-    ensure_private_directory(_runtime_root())
+    ensure_private_directory(runtime_root())
     ensure_private_directory(agent_dir)
 
     # Generate and write the guard script for adapters that use the shared runtime.
@@ -239,7 +236,7 @@ def cmd_install(args: argparse.Namespace) -> None:
 def cmd_uninstall(args: argparse.Namespace) -> None:
     """Handle the 'uninstall' subcommand."""
     explicit_agent_id = getattr(args, "agent_id", None)
-    elydora_dir = _runtime_root()
+    elydora_dir = runtime_root()
     agent_id = explicit_agent_id
     if agent_id:
         agent_dir = _resolve_agent_directory_or_exit(agent_id)

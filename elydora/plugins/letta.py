@@ -1,208 +1,78 @@
-"""Letta Code plugin — merges PreToolUse/PostToolUse hooks into ~/.letta/settings.json."""
+"""Letta Code 0.28 native global hook integration."""
 
 from __future__ import annotations
 
-import json
-import os
-import sys
+from typing import Dict
 
-from ._file_io import write_json_atomic, write_text_atomic
 from .base import AgentPlugin, InstallConfig, PluginStatus
-from .hook_template import generate_hook_script
+from .letta_config import render_letta_document
+from .letta_contract import (
+    AGENT_KEY,
+    JsonObject,
+    build_letta_group,
+    letta_runtime_contracts,
+)
+from .letta_installation import (
+    LettaRuntimePaths,
+    commit_letta_installation,
+    commit_letta_uninstall,
+    preflight_letta_installation,
+    prepare_letta_installation,
+    prepare_letta_uninstall,
+)
+from .letta_io import letta_runtime_files_exist
+from .letta_sources import read_letta_sources
 
 
-SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".letta", "settings.json")
-ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
+def _installed_groups(paths: LettaRuntimePaths) -> Dict[str, JsonObject]:
+    return {
+        "PreToolUse": build_letta_group(paths.guard_path),
+        "PostToolUse": build_letta_group(paths.audit_path),
+        "PostToolUseFailure": build_letta_group(paths.audit_path),
+    }
 
 
 class LettaPlugin(AgentPlugin):
-    """Install/uninstall Elydora audit hook for Letta Code."""
+    """Install Elydora into Letta Code's native global settings."""
 
-    @staticmethod
-    def _hook_path_for(agent_id: str) -> str:
-        return os.path.join(ELYDORA_DIR, agent_id, "hook.py")
+    manages_guard_runtime = True
+
+    def preflight_install(self, config: InstallConfig) -> None:
+        sources = read_letta_sources()
+        preflight_letta_installation(config, sources)
 
     def install(self, config: InstallConfig) -> None:
-        agent_id = config.get("agent_id", "")
-        agent_name = config.get("agent_name", "")
-
-        # Create per-agent directory
-        agent_dir = os.path.join(ELYDORA_DIR, agent_id)
-        os.makedirs(agent_dir, exist_ok=True)
-
-        # Write config.json
-        config_data = {
-            "org_id": config.get("org_id", ""),
-            "agent_id": agent_id,
-            "kid": config.get("kid", ""),
-            "base_url": config.get("base_url", "https://api.elydora.com"),
-            "token": config.get("token", ""),
-            "agent_name": agent_name,
-        }
-        config_path = os.path.join(agent_dir, "config.json")
-        write_json_atomic(
-            config_path,
-            config_data,
-            0o600,
-            "Elydora runtime config",
+        sources = read_letta_sources()
+        paths = preflight_letta_installation(config, sources)
+        rendered = render_letta_document(
+            sources.global_settings,
+            None,
+            _installed_groups(paths),
         )
-
-        # Write private key
-        private_key_path = os.path.join(agent_dir, "private.key")
-        write_text_atomic(
-            private_key_path,
-            config.get("private_key", ""),
-            0o600,
-            "Elydora private key",
-        )
-
-        script = generate_hook_script(
-            org_id=config.get("org_id", ""),
-            agent_id=agent_id,
-            kid=config.get("kid", ""),
-            base_url=config.get("base_url", "https://api.elydora.com"),
-        )
-        hook_path = self._hook_path_for(agent_id)
-        write_text_atomic(
-            hook_path,
-            script,
-            0o700,
-            "Elydora audit runtime",
-        )
-
-        guard_script_path = config.get("guard_script_path", "")
-        python_exe = sys.executable
-
-        settings = _load_json(SETTINGS_PATH)
-        hooks = settings.setdefault("hooks", {})
-
-        # --- PreToolUse (guard — freeze enforcement, PascalCase with matcher, no timeout_ms) ---
-        pre_tool_use = hooks.setdefault("PreToolUse", [])
-        pre_tool_use[:] = [h for h in pre_tool_use if not _is_elydora_hook(h)]
-        if guard_script_path:
-            pre_tool_use.append({
-                "matcher": "*",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": f'"{python_exe}" {guard_script_path}',
-                    }
-                ],
-            })
-
-        # --- PostToolUse (audit logging, PascalCase with matcher, no timeout_ms) ---
-        post_tool_use = hooks.setdefault("PostToolUse", [])
-
-        post_tool_use[:] = [h for h in post_tool_use if not _is_elydora_hook(h)]
-
-        post_tool_use.append({
-            "matcher": "*",
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": hook_path,
-                }
-            ],
-        })
-
-        _save_json(SETTINGS_PATH, settings)
-        print("Elydora hook installed for Letta Code.")
-        print(f"  Hook script: {hook_path}")
-        print(f"  Settings: {SETTINGS_PATH}")
+        changes = prepare_letta_installation(config, paths, rendered)
+        commit_letta_installation(changes, sources)
+        print(f"Letta Code hooks installed at {sources.global_settings.file_path}")
+        print("Letta Code verification: run /hooks and restart active sessions.")
 
     def uninstall(self, agent_id: str = "") -> None:
-        if os.path.exists(SETTINGS_PATH):
-            settings = _load_json(SETTINGS_PATH)
-            hooks = settings.get("hooks", {})
-            changed = False
-
-            # Remove PreToolUse entries
-            pre_tool_use = hooks.get("PreToolUse", [])
-            pre_filtered = [h for h in pre_tool_use if not _is_elydora_hook(h, agent_id)]
-            if len(pre_filtered) != len(pre_tool_use):
-                hooks["PreToolUse"] = pre_filtered
-                if not pre_filtered:
-                    del hooks["PreToolUse"]
-                changed = True
-
-            # Remove PostToolUse entries
-            post_tool_use = hooks.get("PostToolUse", [])
-            post_filtered = [h for h in post_tool_use if not _is_elydora_hook(h, agent_id)]
-            if len(post_filtered) != len(post_tool_use):
-                hooks["PostToolUse"] = post_filtered
-                if not post_filtered:
-                    del hooks["PostToolUse"]
-                changed = True
-
-            if changed:
-                if not hooks:
-                    del settings["hooks"]
-                _save_json(SETTINGS_PATH, settings)
-
-        # Hook script removal is handled by cli.py cmd_uninstall (rmtree of agent dir)
-        print("Elydora hook uninstalled from Letta Code.")
+        sources = read_letta_sources()
+        rendered = render_letta_document(
+            sources.global_settings, agent_id or None, {}
+        )
+        commit_letta_uninstall(prepare_letta_uninstall(rendered), sources)
 
     def status(self) -> PluginStatus:
-        # Scan ~/.elydora/*/hook.py for any installed hook
-        import glob as _glob
-        hook_pattern = os.path.join(ELYDORA_DIR, "*", "hook.py")
-        hook_files = _glob.glob(hook_pattern)
-        hook_exists = len(hook_files) > 0
-
-        settings_configured = False
-        if os.path.exists(SETTINGS_PATH):
-            settings = _load_json(SETTINGS_PATH)
-            hooks = settings.get("hooks", {})
-            pre_tool_use = hooks.get("PreToolUse", [])
-            post_tool_use = hooks.get("PostToolUse", [])
-            pre_configured = any(_is_elydora_hook(h) for h in pre_tool_use)
-            post_configured = any(_is_elydora_hook(h) for h in post_tool_use)
-            settings_configured = pre_configured and post_configured
-
-        installed = hook_exists and settings_configured
+        sources = read_letta_sources()
+        contracts = letta_runtime_contracts(sources.global_settings.hooks)
+        configured = not sources.disable_control.disabled and bool(contracts)
+        installed = configured and letta_runtime_files_exist(contracts)
+        file_path = sources.global_settings.file_path
         if installed:
-            details = f"Found {len(hook_files)} agent(s): {', '.join(hook_files)}"
-        elif hook_exists:
-            details = "Hook script exists but not configured in settings"
-        elif settings_configured:
-            details = "Configured in settings but hook script missing"
+            details = f"Config: {file_path}"
+        elif contracts and sources.disable_control.disabled:
+            details = f"Configured hooks are disabled: {file_path}"
+        elif contracts:
+            details = f"Configured at {file_path}; managed contract incomplete"
         else:
             details = "Not installed"
-
-        return PluginStatus(installed=installed, agent="letta", details=details)
-
-
-def _is_elydora_hook(entry: dict, agent_id: str = "") -> bool:
-    # Collect all command strings from the entry
-    commands: list[str] = []
-    inner_hooks = entry.get("hooks")
-    if isinstance(inner_hooks, list):
-        for hook in inner_hooks:
-            if isinstance(hook, dict) and isinstance(hook.get("command"), str):
-                commands.append(hook["command"])
-    else:
-        command = entry.get("command")
-        if isinstance(command, str):
-            commands.append(command)
-
-    for cmd in commands:
-        cmd_lower = cmd.lower()
-        if "elydora" not in cmd_lower:
-            continue
-        # If agent_id is specified, only match hooks for that specific agent
-        if agent_id and agent_id in cmd:
-            return True
-        if not agent_id:
-            return True
-    return False
-
-
-def _load_json(path: str) -> dict:
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _save_json(path: str, data: dict) -> None:
-    write_json_atomic(path, data, 0o600, "Letta settings")
+        return PluginStatus(installed=installed, agent=AGENT_KEY, details=details)

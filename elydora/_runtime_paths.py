@@ -14,6 +14,11 @@ _WINDOWS_DEVICE_NAME = re.compile(
 )
 
 
+def runtime_root() -> str:
+    """Return the shared per-user root for Elydora agent runtimes."""
+    return os.path.join(os.path.expanduser("~"), ".elydora")
+
+
 def resolve_agent_directory(root: str, agent_id: str) -> str:
     """Resolve one cross-platform-safe agent directory directly under *root*."""
     if (
