@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess  # nosec B404
+import sys
 
 import pytest
 
@@ -19,7 +20,18 @@ CLAUDE_BINARY = os.environ.get("ELYDORA_CLAUDE_BINARY")
 def test_official_claude_code_accepts_installed_settings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    fixture = prepare_fixture(monkeypatch, tmp_path)
+    fixture = prepare_fixture(
+        monkeypatch,
+        tmp_path,
+        existing_settings={"hooks": {"Stop": [{"hooks": [{
+            "type": "command",
+            "command": sys.executable,
+            "args": ["--version"],
+            "asyncRewake": True,
+            "rewakeMessage": "Background validation failed",
+            "rewakeSummary": "Validation feedback",
+        }]}]}},
+    )
     fixture.install()
     environment = {
         **os.environ,

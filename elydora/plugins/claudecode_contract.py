@@ -35,7 +35,8 @@ HOOK_EVENTS = frozenset({
 COMMON_HANDLER_KEYS = frozenset({"if", "once", "statusMessage", "timeout"})
 HANDLER_KEYS = {
     "command": COMMON_HANDLER_KEYS | {
-        "args", "async", "asyncRewake", "command", "shell", "type",
+        "args", "async", "asyncRewake", "command", "rewakeMessage",
+        "rewakeSummary", "shell", "type",
     },
     "prompt": COMMON_HANDLER_KEYS | {
         "continueOnBlock", "model", "prompt", "type",
@@ -162,6 +163,14 @@ def _validate_handler(
             _string_array(handler["args"], "args", label)
         _optional_boolean(handler, "async", label)
         _optional_boolean(handler, "asyncRewake", label)
+        if "rewakeMessage" in handler:
+            _require_non_empty_string(
+                handler["rewakeMessage"], "rewakeMessage", label
+            )
+        if "rewakeSummary" in handler:
+            _require_non_empty_string(
+                handler["rewakeSummary"], "rewakeSummary", label
+            )
         if "shell" in handler and handler["shell"] not in ("bash", "powershell"):
             raise ValueError(
                 f'{label} field "shell" must be "bash" or "powershell"'

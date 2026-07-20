@@ -75,6 +75,13 @@ def test_install_preserves_settings_and_writes_one_exact_triple(
                     "timeout": 5,
                 }],
             }],
+            "Stop": [{"hooks": [{
+                "type": "command",
+                "command": "background-check",
+                "asyncRewake": True,
+                "rewakeMessage": "Background validation failed",
+                "rewakeSummary": "Validation feedback",
+            }]}],
         },
     }
     fixture = prepare_fixture(
@@ -88,6 +95,7 @@ def test_install_preserves_settings_and_writes_one_exact_triple(
     assert installed["model"] == "sonnet"
     assert installed["hooks"]["Notification"] == existing["hooks"]["Notification"]
     assert installed["hooks"]["PreToolUse"][0] == existing["hooks"]["PreToolUse"][0]
+    assert installed["hooks"]["Stop"] == existing["hooks"]["Stop"]
     assert_managed_triple(installed, fixture)
     first_source = fixture.config_path.read_text(encoding="utf-8")
 
@@ -239,6 +247,18 @@ INVALID_SETTINGS = [
             "type": "command", "command": "x", "timeout": 0,
         }]}]}}),
         "positive finite number",
+    ),
+    (
+        json.dumps({"hooks": {"Stop": [{"hooks": [{
+            "type": "command", "command": "x", "rewakeMessage": "",
+        }]}]}}),
+        "rewakeMessage.*non-empty string",
+    ),
+    (
+        json.dumps({"hooks": {"Stop": [{"hooks": [{
+            "type": "command", "command": "x", "rewakeSummary": "",
+        }]}]}}),
+        "rewakeSummary.*non-empty string",
     ),
     (
         json.dumps({"hooks": {"PreToolUse": [{"hooks": [{
