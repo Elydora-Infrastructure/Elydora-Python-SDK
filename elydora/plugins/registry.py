@@ -63,7 +63,7 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "kimi": {
         "name": "Kimi Code",
-        "hook_event": "PreToolUse/PostToolUse",
+        "hook_event": "PreToolUse/PostToolUse/PostToolUseFailure",
         "config_path": "~/.kimi-code/config.toml",
     },
     "letta": {

@@ -84,7 +84,7 @@ Cursor installation writes native global `preToolUse`, `postToolUse`, and `postT
 
 Cline installation writes `PreToolUse.mjs` and `PostToolUse.mjs` to `$CLINE_DIR/hooks` (default `~/.cline/hooks`). Elydora leaves the Documents and workspace hook roots unchanged. The wrappers preserve Cline's official payload and translate a frozen guard into JSON stdout cancellation control.
 
-Kimi installation writes the strict hook contract to each detected runtime: Kimi Code's `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`) and the migrating Python CLI's `~/.kimi/config.toml`. A fresh installation targets current Kimi Code, avoiding cross-runtime migration markers. Both runtimes load the hooks globally; run `/hooks` to inspect them.
+Kimi installation writes exact `PreToolUse`, `PostToolUse`, and `PostToolUseFailure` rules to every detected runtime: Kimi Code's `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`) and the legacy Python CLI's `~/.kimi/config.toml`. A fresh installation targets stable Kimi Code; an existing legacy home activates the migration contract. Empty `KIMI_CODE_HOME` values use the default. The selected TOML files, generated runtimes, runtime config, and private key commit as one rollback-capable transaction. Managed commands preserve Kimi's native snake_case event JSON, propagate freeze and revocation through exit code `2`, and use encoded PowerShell on Windows. Run `/hooks` to inspect the global rules.
 
 Grok Build installation writes native global hooks to `$GROK_HOME/hooks/elydora-audit.json` (default `~/.grok/hooks/elydora-audit.json`). Project hooks still follow Grok's `/hooks-trust` workflow; Elydora leaves project, Claude Code, and Cursor compatibility files unchanged.
 
