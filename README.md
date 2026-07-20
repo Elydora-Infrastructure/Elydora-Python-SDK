@@ -8,7 +8,7 @@ Official Python SDK for the [Elydora](https://elydora.com) tamper-evident audit 
 pip install elydora
 ```
 
-Requires Python 3.9+.
+Requires Python 3.10+.
 
 ## Quick Start
 

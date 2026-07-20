@@ -1,6 +1,6 @@
 """Type definitions matching the Elydora backend API contract.
 
-All types use TypedDict for structural typing, compatible with Python 3.9+.
+All types use TypedDict for structural typing, compatible with Python 3.10+.
 """
 
 import sys
