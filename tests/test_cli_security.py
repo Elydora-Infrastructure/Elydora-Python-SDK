@@ -17,7 +17,6 @@ from elydora.plugins._file_io import write_text_atomic
 from elydora.plugins import (
     copilot,
     cursor,
-    gemini,
     kiroide,
     letta,
     opencode,
@@ -375,7 +374,6 @@ def test_atomic_secret_write_preserves_existing_file_on_replace_failure(
     [
         (copilot, copilot.CopilotPlugin, "copilot"),
         (cursor, cursor.CursorPlugin, "cursor"),
-        (gemini, gemini.GeminiPlugin, "gemini"),
         (kiroide, kiroide.KiroIdePlugin, "kiroide"),
         (letta, letta.LettaPlugin, "letta"),
         (opencode, opencode.OpenCodePlugin, "opencode"),

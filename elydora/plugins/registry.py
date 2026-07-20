@@ -43,8 +43,8 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "gemini": {
         "name": "Gemini CLI",
-        "hook_event": "AfterTool",
-        "config_path": "~/.gemini/settings.json",
+        "hook_event": "BeforeTool/AfterTool",
+        "config_path": "$GEMINI_CLI_HOME/.gemini/settings.json",
     },
     "grok": {
         "name": "Grok Build",
