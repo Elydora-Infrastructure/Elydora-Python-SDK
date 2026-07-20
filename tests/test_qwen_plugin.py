@@ -9,30 +9,41 @@ import pytest
 
 from elydora import cli
 from elydora.plugins import _transaction, qwen
+from elydora.plugins.qwen_config import render_qwen_document
+from elydora.plugins.qwen_contract import (
+    AUDIT_HOOK_NAME,
+    GUARD_HOOK_NAME,
+    build_qwen_group,
+)
+from elydora.plugins.qwen_installation import (
+    commit_qwen_installation,
+    preflight_qwen_installation,
+    prepare_qwen_installation,
+)
+from elydora.plugins.qwen_sources import read_qwen_sources
 from elydora.plugins.registry import SUPPORTED_AGENTS
 from qwen_support import (
     AGENT_ID,
-    QwenFixture,
-    generated_command,
-    managed_handler,
-    parse_settings,
-    run_handler,
+    VALID_PRIVATE_KEY,
+    assert_managed_triple,
+    legacy_group,
+    prepare_fixture,
+    run_cli,
+    write_json,
+    write_text,
 )
-
-
-EXPECTED_SHELL = "powershell" if os.name == "nt" else "bash"
 
 
 def test_qwen_is_registered_in_the_sdk_and_cli() -> None:
     assert SUPPORTED_AGENTS["qwen"] == {
         "name": "Qwen Code",
-        "hook_event": "PreToolUse/PostToolUse",
+        "hook_event": "PreToolUse/PostToolUse/PostToolUseFailure",
         "config_path": "~/.qwen/settings.json",
     }
     assert cli.PLUGIN_MAP["qwen"] is qwen.QwenPlugin
 
 
-def test_install_preserves_jsonc_and_is_idempotent(
+def test_install_preserves_all_sources_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -42,208 +53,132 @@ def test_install_preserves_jsonc_and_is_idempotent(
         "  // Keep this user preference.\r\n"
         '  "theme": "GitHub",\r\n'
         '  "hooks": {\r\n'
-        '    "SessionStart": [{ "hooks": [{ "type": "command", "command": "session-hook" }] }],\r\n'
-        '    "PreToolUse": [{ "matcher": "read_file", "hooks": [{ "type": "command", "command": "user-hook" }] }]\r\n'
+        '    "FutureEvent": [null],\r\n'
+        '    "PreToolUse": [{ "matcher": "read_file", "hooks": '
+        '[{ "type": "command", "command": "user-hook" }] }]\r\n'
         "  }\r\n"
         "}\r\n"
     )
-    fixture = QwenFixture(monkeypatch, tmp_path, existing_settings=source)
-    workspace_settings = fixture.workspace_dir / ".qwen" / "settings.json"
-    workspace_settings.parent.mkdir(parents=True)
-    workspace_settings.write_text('{ "owner": "workspace" }\n', encoding="utf-8")
-    fixture.install()
-    fixture.install()
-    output = capsys.readouterr().out
-    with open(fixture.config_path, "r", encoding="utf-8", newline="") as file:
-        raw = file.read()
-    settings = parse_settings(fixture.config_path)
-    assert "Keep this user preference" in raw
-    assert "\r\n" in raw
-    assert settings["theme"] == "GitHub"
-    assert settings["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "session-hook"
-    assert len(settings["hooks"]["PreToolUse"]) == 2
-    assert len(settings["hooks"]["PostToolUse"]) == 1
-    for event, script_path in (
-        ("PreToolUse", fixture.guard_path),
-        ("PostToolUse", fixture.audit_path),
-    ):
-        handler = managed_handler(settings, event, script_path)
-        assert handler is not None
-        assert sorted(handler) == ["command", "shell", "timeout", "type"]
-        assert handler["shell"] == EXPECTED_SHELL
-        assert handler["timeout"] == 10_000
-    assert parse_settings(workspace_settings) == {"owner": "workspace"}
-    assert (
-        json.loads(fixture.runtime_config.read_text(encoding="utf-8"))["agent_name"]
-        == "qwen"
+    fixture = prepare_fixture(
+        monkeypatch, tmp_path, existing_settings=source
     )
-    assert fixture.private_key_path.is_file()
-    assert fixture.audit_path.is_file()
-    assert "run /hooks" in output
+    workspace_path = fixture.project_dir / ".qwen" / "settings.json"
+    write_json(workspace_path, {"owner": "workspace"})
+    write_json(fixture.system_defaults_path, {"owner": "defaults"})
+    write_json(fixture.system_path, {"owner": "system"})
+
+    fixture.install()
+    first_source = fixture.source()
+    first = fixture.settings()
+    assert "Keep this user preference" in first_source
+    assert "\r\n" in first_source
+    assert first["theme"] == "GitHub"
+    assert first["hooks"]["FutureEvent"] == [None]
+    assert first["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "user-hook"
+    assert_managed_triple(first)
+    for file_path in (
+        fixture.guard_path,
+        fixture.audit_path,
+        fixture.runtime_config_path,
+        fixture.private_key_path,
+    ):
+        assert file_path.is_file()
+
+    fixture.install()
+    assert fixture.source() == first_source
+    assert json.loads(workspace_path.read_text(encoding="utf-8")) == {
+        "owner": "workspace"
+    }
+    assert json.loads(fixture.system_defaults_path.read_text()) == {
+        "owner": "defaults"
+    }
+    assert json.loads(fixture.system_path.read_text()) == {"owner": "system"}
+    assert "run /hooks" in capsys.readouterr().out
 
 
-def test_qwen_home_uses_official_user_env_precedence(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+def test_qwen_home_uses_complete_official_bootstrap_precedence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    fixture = QwenFixture(monkeypatch, tmp_path)
+    fixture = prepare_fixture(monkeypatch, tmp_path)
     first_home = tmp_path / "first # qwen home"
     second_home = tmp_path / "second qwen home"
-    fixture.qwen_dir.mkdir(parents=True)
-    (fixture.qwen_dir / ".env").write_text(
+    write_text(
+        fixture.home_dir / ".qwen" / ".env",
         f'export QWEN_HOME = "{first_home}" # selected by Qwen\n',
-        encoding="utf-8",
     )
-    (fixture.home_dir / ".env").write_text(
-        f"QWEN_HOME={second_home}\n", encoding="utf-8"
-    )
+    write_text(fixture.home_dir / ".env", f"QWEN_HOME={second_home}\n")
+    write_text(first_home / ".env", "QWEN_RUNTIME_DIR=runtime\n")
+
     fixture.install()
     selected = first_home / "settings.json"
-    assert managed_handler(parse_settings(selected), "PreToolUse", fixture.guard_path)
+    assert_managed_triple(fixture.settings(selected))
     assert not (second_home / "settings.json").exists()
     assert not fixture.config_path.exists()
     assert str(selected) in fixture.plugin.status()["details"]
 
 
 @pytest.mark.parametrize(
-    ("value", "relative"),
+    ("value", "expected"),
     [
-        ("relative-qwen", "relative-qwen"),
-        ("~/custom-qwen", "custom-qwen"),
-        ("", ".qwen"),
+        ("relative-qwen", "project"),
+        ("~/custom-qwen", "home"),
+        ("", "default"),
     ],
 )
-def test_explicit_qwen_home_supports_relative_tilde_and_empty_values(
+def test_explicit_qwen_home_preserves_process_ownership_semantics(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     value: str,
-    relative: str,
+    expected: str,
 ) -> None:
-    fixture = QwenFixture(monkeypatch, tmp_path / (relative.replace(".", "default")))
-    fixture.qwen_dir.mkdir(parents=True)
-    ignored = tmp_path / "ignored-qwen-home"
-    (fixture.qwen_dir / ".env").write_text(f"QWEN_HOME={ignored}\n", encoding="utf-8")
+    fixture = prepare_fixture(monkeypatch, tmp_path)
+    ignored = tmp_path / "ignored-home"
+    write_text(
+        fixture.home_dir / ".qwen" / ".env", f"QWEN_HOME={ignored}\n"
+    )
     monkeypatch.setenv("QWEN_HOME", value)
     fixture.install()
-    if value.startswith("relative"):
-        selected = fixture.workspace_dir / relative / "settings.json"
-    else:
-        selected = fixture.home_dir / relative / "settings.json"
-    assert "hooks" in parse_settings(selected)
+    paths = {
+        "project": fixture.project_dir / "relative-qwen" / "settings.json",
+        "home": fixture.home_dir / "custom-qwen" / "settings.json",
+        "default": fixture.config_path,
+    }
+    assert_managed_triple(fixture.settings(paths[expected]))
     assert not (ignored / "settings.json").exists()
 
 
-def test_commands_block_and_forward_official_input_byte_for_byte(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+def test_qwen_validates_current_schemas_and_preserves_future_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    fixture = QwenFixture(monkeypatch, tmp_path)
+    fixture = prepare_fixture(monkeypatch, tmp_path, existing_settings={
+        "hooks": {
+            "FutureEvent": [None],
+            "MessageDisplay": [{
+                "matcher": "[",
+                "hooks": [{
+                    "type": "http",
+                    "url": "http://127.0.0.1:8080/hook",
+                    "headers": {"Authorization": "Bearer ${TOKEN}"},
+                    "allowedEnvVars": ["TOKEN"],
+                    "timeout": 10,
+                    "once": True,
+                }],
+            }],
+            "Stop": [{
+                "hooks": [{
+                    "type": "prompt",
+                    "prompt": "Evaluate $ARGUMENTS",
+                    "model": "fast",
+                    "timeout": 30,
+                }],
+            }],
+        },
+    })
     fixture.install()
-    capture_path = tmp_path / "captured-event.json"
-    fixture.audit_path.write_text(
-        "import pathlib, sys\n"
-        f"pathlib.Path({str(capture_path)!r}).write_bytes(sys.stdin.buffer.read())\n",
-        encoding="utf-8",
-    )
-    settings = parse_settings(fixture.config_path)
-    guard = managed_handler(settings, "PreToolUse", fixture.guard_path)
-    audit = managed_handler(settings, "PostToolUse", fixture.audit_path)
-    assert guard is not None and audit is not None
-    payload = json.dumps(
-        {
-            "session_id": "session-1",
-            "transcript_path": "transcript.jsonl",
-            "cwd": str(fixture.workspace_dir),
-            "hook_event_name": "PreToolUse",
-            "timestamp": "2026-07-19T00:00:00.000Z",
-            "tool_name": "run_shell_command",
-            "tool_input": {"command": "echo test"},
-        }
-    )
-    guard_result = run_handler(guard, payload)
-    assert guard_result.returncode == 2
-    assert "Agent is frozen by Elydora" in guard_result.stderr
-    post_payload = payload.replace("PreToolUse", "PostToolUse")
-    audit_result = run_handler(audit, post_payload)
-    assert audit_result.returncode == 0, audit_result.stderr
-    assert capture_path.read_text(encoding="utf-8") == post_payload
-
-
-def test_status_requires_enabled_pair_and_complete_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    fixture = QwenFixture(monkeypatch, tmp_path)
-    fixture.install()
-    assert fixture.plugin.status()["installed"] is True
-    settings = parse_settings(fixture.config_path)
-    settings["disableAllHooks"] = True
-    fixture.config_path.write_text(json.dumps(settings), encoding="utf-8")
-    status = fixture.plugin.status()
-    assert status["installed"] is False
-    assert "disabled" in status["details"].lower()
-    settings["disableAllHooks"] = False
-    fixture.config_path.write_text(json.dumps(settings), encoding="utf-8")
-    fixture.guard_path.unlink()
-    status = fixture.plugin.status()
-    assert status["installed"] is False
-    assert "runtime" in status["details"].lower()
-
-
-def test_uninstall_preserves_external_mutations_and_exact_ownership(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    fixture = QwenFixture(
-        monkeypatch,
-        tmp_path,
-        existing_settings='{"$version":4,"owner":"user"}',
-    )
-    fixture.install()
-    settings = parse_settings(fixture.config_path)
-    managed_group = settings["hooks"]["PreToolUse"][-1]
-    managed_group["hooks"].append({"type": "command", "command": "user-command"})
-    lookalike = fixture.home_dir / ".elydora" / "agent-10" / "guard.py"
-    settings["hooks"]["PreToolUse"].append(
-        {
-            "matcher": "*",
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": generated_command(lookalike),
-                    "shell": EXPECTED_SHELL,
-                    "timeout": 10_000,
-                }
-            ],
-        }
-    )
-    fixture.config_path.write_text(
-        json.dumps(settings, indent=2) + "\n", encoding="utf-8"
-    )
-    before = fixture.config_path.read_text(encoding="utf-8")
-    fixture.plugin.uninstall("other-agent")
-    assert fixture.config_path.read_text(encoding="utf-8") == before
-    uninstall_id = "AGENT-1" if os.name == "nt" else AGENT_ID
-    fixture.plugin.uninstall(uninstall_id)
-    remaining = parse_settings(fixture.config_path)
-    assert remaining["$version"] == 4
-    assert remaining["owner"] == "user"
-    assert remaining["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "user-command"
-    assert "agent-10" in json.dumps(remaining)
-    assert "PostToolUse" not in remaining.get("hooks", {})
-
-
-def test_uninstall_deletes_an_empty_elydora_owned_settings_file(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    fixture = QwenFixture(monkeypatch, tmp_path)
-    fixture.install()
-    assert fixture.config_path.read_text(encoding="utf-8").startswith(
-        "// Managed by Elydora"
-    )
-    fixture.plugin.uninstall(AGENT_ID)
-    assert not fixture.config_path.exists()
+    settings = fixture.settings()
+    assert settings["hooks"]["FutureEvent"] == [None]
+    assert settings["hooks"]["MessageDisplay"][0]["matcher"] == "["
+    assert settings["hooks"]["Stop"][0]["hooks"][0]["type"] == "prompt"
 
 
 @pytest.mark.parametrize(
@@ -254,81 +189,132 @@ def test_uninstall_deletes_an_empty_elydora_owned_settings_file(
         '{ "owner": true, }',
         '{ "hooks": {}, "hooks": {} }',
         '{ "disableAllHooks": "yes" }',
+        '{ "hooks": null }',
         '{ "hooks": [] }',
-        '{ "hooks": { "UnknownEvent": [] } }',
         '{ "hooks": { "PreToolUse": null } }',
         '{ "hooks": { "PreToolUse": [null] } }',
+        '{ "hooks": { "PreToolUse": [{ "matcher": 1, "hooks": [] }] } }',
         '{ "hooks": { "PreToolUse": [{ "matcher": "[", "hooks": [] }] } }',
-        '{ "hooks": { "PreToolUse": [{ "sequential": "yes", "hooks": [] }] } }',
-        '{ "hooks": { "PreToolUse": [{ "hooks": null }] } }',
+        '{ "hooks": { "Notification": [{ "matcher": "[", "hooks": [] }] } }',
+        '{ "hooks": { "PreToolUse": [{ "sequential": 1, "hooks": [] }] } }',
+        '{ "hooks": { "PreToolUse": [{}] } }',
+        '{ "hooks": { "PreToolUse": [{ "hooks": [null] }] } }',
+        '{ "hooks": { "PreToolUse": [{ "hooks": [{ "type": "function" }] }] } }',
         '{ "hooks": { "PreToolUse": [{ "hooks": [{ "type": "command" }] }] } }',
-        '{ "hooks": { "PreToolUse": [{ "hooks": [{ "type": "http" }] }] }',
-        '{ "hooks": { "PreToolUse": [{ "hooks": [{ "type": "function", "command": "x" }] }] } }',
-        '{ "hooks": { "PreToolUse": [{ "hooks": [{ "type": "command", "command": "x", "timeout": "ten" }] }] } }',
+        '{ "hooks": { "PreToolUse": [{ "hooks": [{ "type": "http" }] }] } }',
+        '{ "hooks": { "Stop": [{ "hooks": [{ "type": "prompt" }] }] } }',
+        '{ "hooks": { "PreToolUse": [{ "hooks": [{ "type": "command", "command": "x", "timeout": -1 }] }] } }',
+        '{ "security": { "folderTrust": { "enabled": "yes" } } }',
     ],
 )
-def test_install_rejects_malformed_settings_before_every_write(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    source: str,
+def test_install_rejects_malformed_sources_before_every_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str
 ) -> None:
-    fixture = QwenFixture(monkeypatch, tmp_path, existing_settings=source)
-    with pytest.raises((ValueError, RuntimeError), match="Qwen"):
+    fixture = prepare_fixture(
+        monkeypatch, tmp_path, existing_settings=source
+    )
+    with pytest.raises((OSError, ValueError), match="Qwen"):
         fixture.install()
-    assert fixture.config_path.read_text(encoding="utf-8") == source
-    assert not fixture.audit_path.exists()
-    assert not fixture.runtime_config.exists()
-    assert not fixture.private_key_path.exists()
+    assert fixture.source() == source
+    assert not fixture.agent_dir.exists()
 
 
-def test_install_fails_on_unreadable_env_and_missing_guard(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+def test_install_surfaces_malformed_read_only_sources_and_routing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    env_fixture = QwenFixture(monkeypatch, tmp_path / "env")
-    (env_fixture.qwen_dir / ".env").mkdir(parents=True)
-    with pytest.raises(OSError, match="Qwen home environment"):
-        env_fixture.install()
-    assert not env_fixture.config_path.exists()
-    assert not env_fixture.runtime_config.exists()
+    system = prepare_fixture(monkeypatch, tmp_path / "system")
+    write_text(system.system_path, "{ malformed")
+    with pytest.raises(ValueError, match="system override"):
+        system.install()
+    assert not system.config_path.exists()
+    assert not system.agent_dir.exists()
 
-    runtime_fixture = QwenFixture(
+    routing = prepare_fixture(monkeypatch, tmp_path / "routing")
+    (routing.home_dir / ".qwen" / ".env").mkdir(parents=True)
+    with pytest.raises(OSError, match="Qwen Code home environment"):
+        routing.install()
+    assert not routing.config_path.exists()
+    assert not routing.agent_dir.exists()
+
+
+def test_disable_precedence_respects_workspace_trust(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    user = prepare_fixture(
         monkeypatch,
-        tmp_path / "runtime",
-        create_guard=False,
+        tmp_path / "user",
+        existing_settings={"disableAllHooks": False},
     )
-    with pytest.raises(FileNotFoundError, match="guard runtime is missing"):
-        runtime_fixture.install()
-    assert not runtime_fixture.config_path.exists()
-    assert not runtime_fixture.runtime_config.exists()
+    write_json(user.system_defaults_path, {"disableAllHooks": True})
+    user.install()
 
+    system = prepare_fixture(monkeypatch, tmp_path / "system")
+    write_json(system.system_path, {"disableAllHooks": True})
+    with pytest.raises(ValueError, match="system override"):
+        system.install()
 
-def test_status_surfaces_malformed_runtime_metadata_and_cleans_staging(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    fixture = QwenFixture(monkeypatch, tmp_path)
-    fixture.install()
-    assert [
-        path
-        for path in fixture.home_dir.rglob("*")
-        if path.suffix in {".tmp", ".rollback"}
-    ] == []
-    fixture.runtime_config.write_text("{ malformed", encoding="utf-8")
-    with pytest.raises(ValueError, match="parse Elydora runtime config"):
-        fixture.plugin.status()
-
-
-def test_transaction_rolls_back_runtime_and_settings(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    fixture = QwenFixture(
+    untrusted = prepare_fixture(
         monkeypatch,
-        tmp_path,
-        existing_settings={"owner": "user"},
+        tmp_path / "untrusted",
+        existing_settings={"security": {"folderTrust": {"enabled": True}}},
     )
-    original = fixture.config_path.read_text(encoding="utf-8")
+    write_json(
+        untrusted.project_dir / ".qwen" / "settings.json",
+        {"disableAllHooks": True},
+    )
+    write_json(
+        untrusted.trusted_folders_path,
+        {str(untrusted.project_dir): "DO_NOT_TRUST"},
+    )
+    untrusted.install()
+
+    trusted = prepare_fixture(
+        monkeypatch,
+        tmp_path / "trusted",
+        existing_settings={"security": {"folderTrust": {"enabled": True}}},
+    )
+    write_json(
+        trusted.project_dir / ".qwen" / "settings.json",
+        {"disableAllHooks": True},
+    )
+    write_json(
+        trusted.trusted_folders_path,
+        {str(trusted.project_dir): "TRUST_FOLDER"},
+    )
+    with pytest.raises(ValueError, match="workspace settings"):
+        trusted.install()
+
+
+def test_transaction_aborts_when_read_only_source_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fixture = prepare_fixture(monkeypatch, tmp_path)
+    write_json(fixture.system_path, {"owner": "before"})
+    sources = read_qwen_sources()
+    paths = preflight_qwen_installation(fixture.config, sources)
+    rendered = render_qwen_document(sources.user, None, {
+        "PreToolUse": build_qwen_group(paths.guard_path, GUARD_HOOK_NAME),
+        "PostToolUse": build_qwen_group(paths.audit_path, AUDIT_HOOK_NAME),
+        "PostToolUseFailure": build_qwen_group(
+            paths.audit_path, AUDIT_HOOK_NAME
+        ),
+    })
+    changes = prepare_qwen_installation(fixture.config, paths, rendered)
+    write_json(fixture.system_path, {"owner": "after"})
+    with pytest.raises(OSError, match="system override settings changed"):
+        commit_qwen_installation(changes, sources)
+    assert json.loads(fixture.system_path.read_text()) == {"owner": "after"}
+    assert not fixture.config_path.exists()
+    assert not fixture.agent_dir.exists()
+
+
+def test_transaction_rolls_back_every_runtime_and_settings_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fixture = prepare_fixture(
+        monkeypatch, tmp_path, existing_settings={"owner": "user"}
+    )
+    original = fixture.source()
     real_replace = _transaction.os.replace
     failed = False
 
@@ -340,13 +326,17 @@ def test_transaction_rolls_back_runtime_and_settings(
         real_replace(source, destination)
 
     monkeypatch.setattr(_transaction.os, "replace", fail_settings_commit)
-    with pytest.raises(OSError, match="Write Qwen Code installation"):
+    with pytest.raises(OSError, match="Install Qwen Code hooks"):
         fixture.install()
-    assert failed is True
-    assert fixture.config_path.read_text(encoding="utf-8") == original
-    assert not fixture.audit_path.exists()
-    assert not fixture.runtime_config.exists()
-    assert not fixture.private_key_path.exists()
+    assert failed
+    assert fixture.source() == original
+    for file_path in (
+        fixture.guard_path,
+        fixture.audit_path,
+        fixture.runtime_config_path,
+        fixture.private_key_path,
+    ):
+        assert not file_path.exists()
     assert [
         path
         for path in fixture.home_dir.rglob("*")
@@ -354,12 +344,135 @@ def test_transaction_rolls_back_runtime_and_settings(
     ] == []
 
 
-def test_install_rejects_invalid_agent_id_before_writes(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+def test_install_migrates_legacy_and_uninstall_preserves_lookalikes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    fixture = QwenFixture(monkeypatch, tmp_path)
-    fixture.config["agent_id"] = "../escape"
-    with pytest.raises(ValueError, match="single non-empty path segment"):
-        fixture.install()
+    fixture = prepare_fixture(monkeypatch, tmp_path)
+    lookalike = legacy_group(fixture.guard_path)
+    lookalike["hooks"][0]["timeout"] = 9_000
+    write_json(fixture.config_path, {
+        "owner": "user",
+        "hooks": {
+            "PreToolUse": [legacy_group(fixture.guard_path), lookalike],
+            "PostToolUse": [legacy_group(fixture.audit_path)],
+        },
+    })
+    fixture.install()
+    settings = fixture.settings()
+    assert_managed_triple(settings)
+    managed = settings["hooks"]["PreToolUse"][-1]
+    managed["userField"] = "preserve-group"
+    managed["hooks"].append({"type": "command", "command": "user-command"})
+    write_json(fixture.config_path, settings)
+
+    fixture.plugin.uninstall(AGENT_ID)
+    remaining = fixture.settings()
+    assert remaining["owner"] == "user"
+    assert any(
+        group["hooks"][0].get("timeout") == 9_000
+        for group in remaining["hooks"]["PreToolUse"]
+    )
+    assert any(
+        handler.get("command") == "user-command"
+        for group in remaining["hooks"]["PreToolUse"]
+        for handler in group["hooks"]
+    )
+    assert "PostToolUse" not in remaining["hooks"]
+    assert "PostToolUseFailure" not in remaining["hooks"]
+
+
+def test_uninstall_removes_owned_file_and_preserves_user_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    user = prepare_fixture(
+        monkeypatch,
+        tmp_path / "user",
+        existing_settings={"theme": "GitHub", "hooks": {"Notification": []}},
+    )
+    user.install()
+    user.plugin.uninstall(AGENT_ID)
+    assert user.settings() == {
+        "theme": "GitHub",
+        "hooks": {"Notification": []},
+    }
+
+    owned = prepare_fixture(monkeypatch, tmp_path / "owned")
+    owned.install()
+    assert owned.source().startswith("// Managed by Elydora")
+    owned.plugin.uninstall(AGENT_ID)
+    assert not owned.config_path.exists()
+
+
+def test_status_requires_exact_contract_and_runtime_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fixture = prepare_fixture(monkeypatch, tmp_path)
+    fixture.install()
+    assert fixture.plugin.status()["installed"] is True
+    settings = fixture.settings()
+    settings["hooks"]["PostToolUseFailure"].append(
+        settings["hooks"]["PostToolUseFailure"][-1]
+    )
+    write_json(fixture.config_path, settings)
+    assert fixture.plugin.status()["installed"] is False
+
+    fixture.install()
+    write_text(fixture.private_key_path, "invalid")
+    with pytest.raises(ValueError, match="private key"):
+        fixture.plugin.status()
+    fixture.install()
+    write_text(fixture.guard_path, "tampered")
+    assert fixture.plugin.status()["installed"] is False
+    fixture.install()
+    runtime = json.loads(fixture.runtime_config_path.read_text())
+    runtime["agent_name"] = "other"
+    write_json(fixture.runtime_config_path, runtime)
+    with pytest.raises(ValueError, match="runtime identity"):
+        fixture.plugin.status()
+
+
+def test_preflight_rejects_unverifiable_runtime_and_invalid_agent_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    identity = prepare_fixture(monkeypatch, tmp_path / "identity")
+    write_text(identity.audit_path, "unverified")
+    with pytest.raises(ValueError, match="without config.json"):
+        identity.install()
+    assert not identity.config_path.exists()
+
+    invalid = prepare_fixture(monkeypatch, tmp_path / "invalid")
+    invalid.config["agent_id"] = "../escape"
+    with pytest.raises(ValueError, match="Invalid agent ID"):
+        invalid.install()
+    assert not invalid.config_path.exists()
+
+
+def test_qwen_cli_install_status_and_uninstall_end_to_end(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fixture = prepare_fixture(monkeypatch, tmp_path)
+    key_file = tmp_path / "install-private.key"
+    token_file = tmp_path / "install-token.txt"
+    write_text(key_file, VALID_PRIVATE_KEY + "\n")
+    write_text(token_file, "token-1\n")
+    install = run_cli(fixture, [
+        "install",
+        "--agent", "qwen",
+        "--org_id", "org-1",
+        "--agent_id", AGENT_ID,
+        "--kid", "kid-1",
+        "--private_key_file", str(key_file),
+        "--token_file", str(token_file),
+        "--base_url", "http://127.0.0.1:9",
+    ])
+    assert install.returncode == 0, install.stderr
+    assert_managed_triple(fixture.settings())
+    status = run_cli(fixture, ["status"])
+    assert status.returncode == 0, status.stderr
+    assert "Qwen Code" in status.stdout and "[installed]" in status.stdout
+    uninstall = run_cli(fixture, [
+        "uninstall", "--agent", "qwen", "--agent_id", AGENT_ID
+    ])
+    assert uninstall.returncode == 0, uninstall.stderr
     assert not fixture.config_path.exists()
+    assert not fixture.agent_dir.exists()

@@ -78,7 +78,7 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "qwen": {
         "name": "Qwen Code",
-        "hook_event": "PreToolUse/PostToolUse",
+        "hook_event": "PreToolUse/PostToolUse/PostToolUseFailure",
         "config_path": "~/.qwen/settings.json",
     },
 }

@@ -1,161 +1,86 @@
-"""Qwen Code native global user-hook integration."""
+"""Qwen Code 0.20 native global user-hook integration."""
 
 from __future__ import annotations
 
-import json
-import os
-from typing import List, Optional
+from typing import Dict
 
-from ._transaction import FileChange, file_change, write_changes
 from .base import AgentPlugin, InstallConfig, PluginStatus
-from .hook_template import generate_hook_script
-from .qwen_config import render_document
+from .qwen_config import render_qwen_document
 from .qwen_contract import (
     AGENT_KEY,
-    AUDIT_SCRIPT,
-    GUARD_SCRIPT,
-    build_group,
-    elydora_dir,
-    runtime_contracts,
-    validate_javascript_regexes,
+    AUDIT_HOOK_NAME,
+    GUARD_HOOK_NAME,
+    JsonObject,
+    build_qwen_group,
+    qwen_runtime_contracts,
 )
-from .qwen_io import (
-    read_document,
-    rendered_change,
-    require_runtime,
-    runtime_files_exist,
+from .qwen_installation import (
+    QwenRuntimePaths,
+    commit_qwen_installation,
+    commit_qwen_uninstall,
+    preflight_qwen_installation,
+    prepare_qwen_installation,
+    prepare_qwen_uninstall,
 )
+from .qwen_io import qwen_runtime_files_exist
+from .qwen_sources import read_qwen_sources
 
 
-def _agent_directory(agent_id: str) -> str:
-    if (
-        not agent_id
-        or agent_id in {".", ".."}
-        or os.path.basename(agent_id) != agent_id
-        or os.path.isabs(agent_id)
-    ):
-        raise ValueError("agent_id must be a single non-empty path segment")
-    return os.path.join(elydora_dir(), agent_id)
-
-
-def _same_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
-
-
-def _append_change(changes: List[FileChange], change: Optional[FileChange]) -> None:
-    if change is not None:
-        changes.append(change)
+def _installed_groups(paths: QwenRuntimePaths) -> Dict[str, JsonObject]:
+    return {
+        "PreToolUse": build_qwen_group(paths.guard_path, GUARD_HOOK_NAME),
+        "PostToolUse": build_qwen_group(paths.audit_path, AUDIT_HOOK_NAME),
+        "PostToolUseFailure": build_qwen_group(
+            paths.audit_path, AUDIT_HOOK_NAME
+        ),
+    }
 
 
 class QwenPlugin(AgentPlugin):
-    """Install Elydora into Qwen Code's global user settings."""
+    """Install Elydora into Qwen Code's native user settings."""
+
+    manages_guard_runtime = True
+
+    def preflight_install(self, config: InstallConfig) -> None:
+        sources = read_qwen_sources()
+        preflight_qwen_installation(config, sources)
 
     def install(self, config: InstallConfig) -> None:
-        agent_id = config.get("agent_id", "")
-        agent_directory = _agent_directory(agent_id)
-        document = read_document()
-        validate_javascript_regexes([document.hooks])
-
-        guard_path = config.get("guard_script_path", "")
-        expected_guard_path = os.path.join(agent_directory, GUARD_SCRIPT)
-        if not _same_path(guard_path, expected_guard_path):
-            raise ValueError(
-                "Elydora guard runtime must use the managed agent directory: "
-                f"{expected_guard_path}"
-            )
-        require_runtime(guard_path, "Elydora guard runtime")
-        audit_path = os.path.join(agent_directory, AUDIT_SCRIPT)
-        rendered = render_document(
-            document,
+        sources = read_qwen_sources()
+        paths = preflight_qwen_installation(config, sources)
+        rendered = render_qwen_document(
+            sources.user,
             None,
-            {
-                "PreToolUse": build_group(guard_path),
-                "PostToolUse": build_group(audit_path),
-            },
+            _installed_groups(paths),
         )
-
-        runtime_config = {
-            "org_id": config.get("org_id", ""),
-            "agent_id": agent_id,
-            "kid": config.get("kid", ""),
-            "base_url": config.get("base_url", "https://api.elydora.com"),
-            "token": config.get("token", ""),
-            "agent_name": AGENT_KEY,
-        }
-        audit_script = generate_hook_script(
-            org_id=config.get("org_id", ""),
-            agent_id=agent_id,
-            kid=config.get("kid", ""),
-            base_url=config.get("base_url", "https://api.elydora.com"),
-        )
-        changes: List[FileChange] = []
-        _append_change(
-            changes,
-            file_change(
-                os.path.join(agent_directory, "config.json"),
-                "Elydora runtime config",
-                json.dumps(runtime_config, indent=2) + "\n",
-                0o600,
-            ),
-        )
-        _append_change(
-            changes,
-            file_change(
-                os.path.join(agent_directory, "private.key"),
-                "Elydora private key",
-                config.get("private_key", ""),
-                0o600,
-            ),
-        )
-        _append_change(
-            changes,
-            file_change(
-                audit_path,
-                "Elydora audit runtime",
-                audit_script,
-                0o700,
-            ),
-        )
-        _append_change(changes, rendered_change(rendered))
-        write_changes(changes, "Write Qwen Code installation")
-
-        print(f"Qwen Code: user hooks installed at {document.file_path}")
-        print("Qwen Code: run /hooks to review the Elydora hook changes.")
+        changes = prepare_qwen_installation(config, paths, rendered)
+        commit_qwen_installation(changes, sources)
+        print(f"Qwen Code hooks installed at {sources.user.file_path}")
+        print("Qwen Code verification: run /hooks and restart active sessions.")
 
     def uninstall(self, agent_id: str = "") -> None:
-        document = read_document()
-        if not document.exists:
-            return
-        rendered = render_document(document, agent_id or None, {})
-        change = rendered_change(rendered)
-        write_changes(
-            [change] if change is not None else [],
-            "Write Qwen Code settings",
+        sources = read_qwen_sources()
+        rendered = render_qwen_document(
+            sources.user, agent_id or None, {}
         )
+        commit_qwen_uninstall(prepare_qwen_uninstall(rendered), sources)
 
     def status(self) -> PluginStatus:
-        document = read_document()
-        contracts = runtime_contracts(document.hooks)
-        if document.hooks_disabled:
-            return PluginStatus(
-                installed=False,
-                agent=AGENT_KEY,
-                details=f"Configured hooks are disabled: {document.file_path}",
+        sources = read_qwen_sources()
+        contracts = qwen_runtime_contracts(sources.user.hooks)
+        configured = not sources.disable_control.disabled and bool(contracts)
+        installed = configured and qwen_runtime_files_exist(contracts)
+        if installed:
+            details = f"Config: {sources.user.file_path}"
+        elif contracts and sources.disable_control.disabled:
+            details = f"Configured hooks are disabled: {sources.user.file_path}"
+        elif contracts:
+            details = (
+                f"Configured at {sources.user.file_path}; "
+                "managed contract incomplete"
             )
-        if not contracts:
-            return PluginStatus(
-                installed=False,
-                agent=AGENT_KEY,
-                details="Not installed",
-            )
-        installed = runtime_files_exist(contracts)
-        details = (
-            f"Config: {document.file_path}"
-            if installed
-            else f"Configured at {document.file_path}; runtime scripts missing"
-        )
+        else:
+            details = "Not installed"
         return PluginStatus(
             installed=installed,
             agent=AGENT_KEY,

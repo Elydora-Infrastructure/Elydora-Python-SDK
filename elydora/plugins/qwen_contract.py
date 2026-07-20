@@ -1,4 +1,4 @@
-"""Qwen Code hook schema, commands, and exact ownership rules."""
+"""Qwen Code 0.20 hook schema and exact ownership rules."""
 
 from __future__ import annotations
 
@@ -8,17 +8,26 @@ import math
 import os
 import shutil
 import subprocess  # nosec B404
-import sys
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from .qwen_command import (
+    QwenRuntimeReference,
+    build_qwen_command,
+    qwen_runtime_reference,
+    same_qwen_agent_id,
+    same_qwen_path,
+)
 
 
 AGENT_KEY = "qwen"
 GUARD_SCRIPT = "guard.py"
 AUDIT_SCRIPT = "hook.py"
+GUARD_HOOK_NAME = "elydora-guard"
+AUDIT_HOOK_NAME = "elydora-audit"
 HOOK_TIMEOUT_MILLISECONDS = 10_000
-TOOL_EVENTS = ("PreToolUse", "PostToolUse")
+MANAGED_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 
-_EVENT_NAMES = {
+KNOWN_EVENTS = {
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
@@ -41,9 +50,25 @@ _EVENT_NAMES = {
     "TodoCompleted",
     "InstructionsLoaded",
 }
-_CONFIG_FIELDS = {"enabled", "disabled", "notifications"}
-_HANDLER_KEYS = {"command", "shell", "timeout", "type"}
-_GROUP_KEYS = {"hooks", "matcher"}
+
+REGEX_MATCHER_EVENTS = {
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "PermissionDenied",
+    "SubagentStart",
+    "SubagentStop",
+    "PreCompact",
+    "PostCompact",
+    "SessionStart",
+    "SessionEnd",
+    "StopFailure",
+    "Notification",
+    "InstructionsLoaded",
+    "UserPromptExpansion",
+}
+
 _REGEX_TIMEOUT_SECONDS = 10
 _REGEX_VALIDATOR = """import fs from 'node:fs';
 const entries = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -59,11 +84,11 @@ for (const entry of entries) {
 """
 
 JsonObject = Dict[str, Any]
-QwenHookSettings = Dict[str, Any]
+QwenHooks = Dict[str, Any]
 
 
 @dataclass(frozen=True)
-class RuntimeContract:
+class QwenRuntimeContract:
     agent_id: str
     guard_path: str
     audit_path: str
@@ -81,67 +106,37 @@ def elydora_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".elydora")
 
 
-def _quote_posix(value: str) -> str:
-    return "'" + value.replace("'", "'\"'\"'") + "'"
+def _optional_string(value: JsonObject, field: str, label: str) -> None:
+    if field in value and not isinstance(value[field], str):
+        raise ValueError(f'{label} field "{field}" must be a string')
 
 
-def _quote_powershell(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+def _optional_boolean(value: JsonObject, field: str, label: str) -> None:
+    if field in value and not isinstance(value[field], bool):
+        raise ValueError(f'{label} field "{field}" must be a boolean')
 
 
-def build_command(script_path: str) -> str:
-    if os.name == "nt":
-        invocation = (
-            f"{_quote_powershell(sys.executable)} {_quote_powershell(script_path)}"
-        )
-        return f"& {invocation}; exit $LASTEXITCODE"
-    return f"{_quote_posix(sys.executable)} {_quote_posix(script_path)}"
-
-
-def build_group(script_path: str) -> JsonObject:
-    return {
-        "matcher": "*",
-        "hooks": [
-            {
-                "type": "command",
-                "command": build_command(script_path),
-                "shell": "powershell" if os.name == "nt" else "bash",
-                "timeout": HOOK_TIMEOUT_MILLISECONDS,
-            }
-        ],
-    }
-
-
-def _optional_string(value: JsonObject, key: str, label: str) -> None:
-    if key in value and not isinstance(value[key], str):
-        raise ValueError(f'{label} field "{key}" must be a string')
-
-
-def _optional_boolean(value: JsonObject, key: str, label: str) -> None:
-    if key in value and not isinstance(value[key], bool):
-        raise ValueError(f'{label} field "{key}" must be a boolean')
-
-
-def _optional_string_map(value: JsonObject, key: str, label: str) -> None:
-    if key not in value:
+def _optional_string_map(value: JsonObject, field: str, label: str) -> None:
+    if field not in value:
         return
-    item = value[key]
+    item = value[field]
     if not isinstance(item, dict) or any(
         not isinstance(entry, str) for entry in item.values()
     ):
-        raise ValueError(f'{label} field "{key}" must contain string values')
+        raise ValueError(f'{label} field "{field}" must map names to strings')
 
 
 def _validate_timeout(value: JsonObject, label: str) -> None:
     if "timeout" not in value:
         return
     timeout = value["timeout"]
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or not math.isfinite(timeout)
-        or timeout < 0
-    ):
+    try:
+        finite = math.isfinite(timeout)
+    except (TypeError, OverflowError):
+        finite = False
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not finite:
+        raise ValueError(f"{label} timeout must be a non-negative finite number")
+    if timeout < 0:
         raise ValueError(f"{label} timeout must be a non-negative finite number")
 
 
@@ -151,20 +146,20 @@ def _validate_handler(value: Any, label: str) -> JsonObject:
     handler = dict(value)
     kind = handler.get("type")
     if kind not in {"command", "http", "prompt"}:
-        raise ValueError(f'{label} type must be "command", "http", or "prompt"')
+        raise ValueError(f'{label} has unsupported type "{kind}"')
     _validate_timeout(handler, label)
-    for key in ("name", "description", "statusMessage", "source"):
-        _optional_string(handler, key, label)
+    for field in ("name", "description", "statusMessage", "source"):
+        _optional_string(handler, field, label)
     if kind == "command":
         if not isinstance(handler.get("command"), str) or not handler["command"]:
-            raise ValueError(f"{label} command must be a non-empty string")
+            raise ValueError(f"{label} requires a non-empty command")
         _optional_string_map(handler, "env", label)
         _optional_boolean(handler, "async", label)
         if "shell" in handler and handler["shell"] not in {"bash", "powershell"}:
             raise ValueError(f'{label} shell must be "bash" or "powershell"')
     elif kind == "http":
         if not isinstance(handler.get("url"), str) or not handler["url"]:
-            raise ValueError(f"{label} url must be a non-empty string")
+            raise ValueError(f"{label} requires a non-empty url")
         _optional_string_map(handler, "headers", label)
         _optional_boolean(handler, "once", label)
         _optional_string(handler, "if", label)
@@ -176,12 +171,13 @@ def _validate_handler(value: Any, label: str) -> JsonObject:
             raise ValueError(f"{label} allowedEnvVars must be an array of strings")
     else:
         if not isinstance(handler.get("prompt"), str) or not handler["prompt"]:
-            raise ValueError(f"{label} prompt must be a non-empty string")
+            raise ValueError(f"{label} requires a non-empty prompt")
         _optional_string(handler, "model", label)
     return handler
 
 
-def _validate_group(value: Any, label: str) -> JsonObject:
+def _validate_group(value: Any, event: str, index: int) -> JsonObject:
+    label = f"Qwen Code settings group hooks.{event}[{index}]"
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
     group = dict(value)
@@ -193,49 +189,47 @@ def _validate_group(value: Any, label: str) -> JsonObject:
     if not isinstance(handlers, list):
         raise ValueError(f"{label} must contain a hooks array")
     group["hooks"] = [
-        _validate_handler(handler, f"{label}.hooks[{index}]")
-        for index, handler in enumerate(handlers)
+        _validate_handler(handler, f"{label}.hooks[{handler_index}]")
+        for handler_index, handler in enumerate(handlers)
     ]
     return group
 
 
-def read_hook_settings(value: Any, label: str) -> QwenHookSettings:
+def read_qwen_hooks(value: Any) -> QwenHooks:
     if not isinstance(value, dict):
-        raise ValueError(f"{label} must contain a JSON object")
-    settings = dict(value)
+        raise ValueError('Qwen Code settings field "hooks" must be an object')
+    hooks: QwenHooks = {}
     for event, groups in value.items():
-        if event in _CONFIG_FIELDS:
+        if event not in KNOWN_EVENTS:
+            hooks[event] = groups
             continue
-        if event not in _EVENT_NAMES:
-            raise ValueError(f'{label} contains unsupported field "{event}"')
         if not isinstance(groups, list):
-            raise ValueError(f'{label} field "{event}" must be an array')
-        settings[event] = [
-            _validate_group(group, f'{label} field "{event}"[{index}]')
+            raise ValueError(
+                f'Qwen Code settings field "hooks.{event}" must be an array'
+            )
+        hooks[event] = [
+            _validate_group(group, event, index)
             for index, group in enumerate(groups)
         ]
-    return settings
+    return hooks
 
 
-def _regex_entries(settings: QwenHookSettings) -> List[JsonObject]:
-    entries = []
-    for event, groups in settings.items():
-        if event in _CONFIG_FIELDS:
-            continue
-        for index, group in enumerate(groups):
-            matcher = group.get("matcher")
-            if isinstance(matcher, str) and matcher.strip() not in {"", "*"}:
-                entries.append(
-                    {
-                        "label": f'Qwen Code hooks field "{event}"[{index}] matcher',
+def _matcher_entries(sources: Sequence[QwenHooks]) -> List[JsonObject]:
+    entries: List[JsonObject] = []
+    for hooks in sources:
+        for event in REGEX_MATCHER_EVENTS:
+            for index, group in enumerate(hooks.get(event, [])):
+                matcher = group.get("matcher")
+                if isinstance(matcher, str) and matcher.strip() not in {"", "*"}:
+                    entries.append({
+                        "label": f"Qwen Code settings group hooks.{event}[{index}]",
                         "pattern": matcher,
-                    }
-                )
+                    })
     return entries
 
 
-def validate_javascript_regexes(settings: Sequence[QwenHookSettings]) -> None:
-    entries = [entry for source in settings for entry in _regex_entries(source)]
+def validate_javascript_matchers(sources: Sequence[QwenHooks]) -> None:
+    entries = _matcher_entries(sources)
     if not entries:
         return
     node_path = shutil.which("node")
@@ -267,143 +261,148 @@ def validate_javascript_regexes(settings: Sequence[QwenHookSettings]) -> None:
         or f"Node.js exited with code {result.returncode}"
     )
     raise ValueError(
-        f"Qwen Code matcher must be a valid JavaScript regular expression: {message}"
+        "Qwen Code matcher must be a valid JavaScript regular expression: "
+        + message
     )
 
 
-def _read_quoted_argument(command: str, start: int) -> Optional[Tuple[str, int]]:
-    if start >= len(command) or command[start] != "'":
-        return None
-    value = ""
-    index = start + 1
-    while index < len(command):
-        if os.name == "nt" and command[index : index + 2] == "''":
-            value += "'"
-            index += 2
-            continue
-        if os.name != "nt" and command[index : index + 5] == "'\"'\"'":
-            value += "'"
-            index += 5
-            continue
-        if command[index] == "'":
-            return value, index + 1
-        value += command[index]
-        index += 1
-    return None
-
-
-def _parse_generated_command(command: str) -> Optional[Tuple[str, str]]:
-    if os.name == "nt" and not command.startswith("& "):
-        return None
-    start = 2 if os.name == "nt" else 0
-    executable = _read_quoted_argument(command, start)
-    if executable is None or executable[1] >= len(command):
-        return None
-    if command[executable[1]] != " ":
-        return None
-    script = _read_quoted_argument(command, executable[1] + 1)
-    if script is None:
-        return None
-    suffix = "; exit $LASTEXITCODE" if os.name == "nt" else ""
-    if command[script[1] :] != suffix or not executable[0] or not script[0]:
-        return None
-    return executable[0], script[0]
-
-
-def _same_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
-
-
-def same_agent_id(left: str, right: str) -> bool:
-    return os.path.normcase(left) == os.path.normcase(right)
-
-
-def managed_agent_id(handler: JsonObject, script_name: str) -> Optional[str]:
-    if set(handler) != _HANDLER_KEYS:
-        return None
-    expected_shell = "powershell" if os.name == "nt" else "bash"
-    if (
-        handler.get("type") != "command"
-        or handler.get("timeout") != HOOK_TIMEOUT_MILLISECONDS
-        or handler.get("shell") != expected_shell
-        or not isinstance(handler.get("command"), str)
-    ):
-        return None
-    parsed = _parse_generated_command(handler["command"])
-    if parsed is None or not _same_path(parsed[0], sys.executable):
-        return None
-    script_path = parsed[1]
-    if os.path.basename(script_path) != script_name:
-        return None
-    agent_directory = os.path.dirname(script_path)
-    if not _same_path(os.path.dirname(agent_directory), elydora_dir()):
-        return None
-    agent_id = os.path.basename(agent_directory)
-    return agent_id if agent_id not in {"", ".", ".."} else None
-
-
-def _exact_owned_group(group: JsonObject, indexes: Tuple[int, ...]) -> bool:
-    return (
-        set(group) == _GROUP_KEYS
-        and group.get("matcher") == "*"
-        and bool(indexes)
-        and len(indexes) == len(group["hooks"])
-    )
-
-
-def managed_removals(
-    settings: QwenHookSettings,
-    agent_id: Optional[str] = None,
-) -> List[ManagedRemoval]:
-    removals = []
-    for event, script_name in (
-        ("PreToolUse", GUARD_SCRIPT),
-        ("PostToolUse", AUDIT_SCRIPT),
-    ):
-        for group_index, group in enumerate(settings.get(event, [])):
-            indexes = tuple(
-                index
-                for index, handler in enumerate(group["hooks"])
-                if (
-                    (managed_id := managed_agent_id(handler, script_name)) is not None
-                    and (agent_id is None or same_agent_id(managed_id, agent_id))
-                )
-            )
-            if indexes:
-                removals.append(
-                    ManagedRemoval(
-                        event,
-                        group_index,
-                        indexes,
-                        _exact_owned_group(group, indexes),
-                    )
-                )
-    return removals
-
-
-def _managed_ids(groups: List[JsonObject], script_name: str) -> Set[str]:
+def build_qwen_group(script_path: str, name: str) -> JsonObject:
     return {
-        agent_id
-        for group in groups
-        for handler in group["hooks"]
-        if (agent_id := managed_agent_id(handler, script_name)) is not None
+        "hooks": [{
+            "type": "command",
+            "name": name,
+            "command": build_qwen_command(script_path),
+            "shell": "powershell" if os.name == "nt" else "bash",
+            "timeout": HOOK_TIMEOUT_MILLISECONDS,
+        }]
     }
 
 
-def runtime_contracts(settings: QwenHookSettings) -> List[RuntimeContract]:
-    guards = _managed_ids(settings.get("PreToolUse", []), GUARD_SCRIPT)
-    audits = _managed_ids(settings.get("PostToolUse", []), AUDIT_SCRIPT)
-    contracts = []
-    for agent_id in sorted(guards, key=os.path.normcase):
-        if any(same_agent_id(agent_id, audit_id) for audit_id in audits):
-            root = os.path.join(elydora_dir(), agent_id)
-            contracts.append(
-                RuntimeContract(
-                    agent_id,
-                    os.path.join(root, GUARD_SCRIPT),
-                    os.path.join(root, AUDIT_SCRIPT),
+def _exact_current_group(group: JsonObject) -> bool:
+    return set(group) == {"hooks"}
+
+
+def _exact_legacy_group(group: JsonObject) -> bool:
+    return set(group) == {"hooks", "matcher"} and group.get("matcher") == "*"
+
+
+def _current_reference(
+    handler: JsonObject, script_name: str, hook_name: str
+) -> Optional[QwenRuntimeReference]:
+    if (
+        set(handler) == {"command", "name", "shell", "timeout", "type"}
+        and handler.get("type") == "command"
+        and handler.get("name") == hook_name
+        and handler.get("shell") == ("powershell" if os.name == "nt" else "bash")
+        and handler.get("timeout") == HOOK_TIMEOUT_MILLISECONDS
+        and isinstance(handler.get("command"), str)
+    ):
+        return qwen_runtime_reference(handler["command"], script_name)
+    return None
+
+
+def _legacy_reference(
+    handler: JsonObject, script_name: str
+) -> Optional[QwenRuntimeReference]:
+    if (
+        set(handler) == {"command", "shell", "timeout", "type"}
+        and handler.get("type") == "command"
+        and handler.get("shell") == ("powershell" if os.name == "nt" else "bash")
+        and handler.get("timeout") == HOOK_TIMEOUT_MILLISECONDS
+        and isinstance(handler.get("command"), str)
+    ):
+        return qwen_runtime_reference(handler["command"], script_name)
+    return None
+
+
+def _managed_reference(
+    handler: JsonObject,
+    script_name: str,
+    hook_name: str,
+    include_legacy: bool,
+) -> Optional[QwenRuntimeReference]:
+    current = _current_reference(handler, script_name, hook_name)
+    if current is not None or not include_legacy:
+        return current
+    return _legacy_reference(handler, script_name)
+
+
+_EVENT_CONTRACTS = (
+    ("PreToolUse", GUARD_SCRIPT, GUARD_HOOK_NAME),
+    ("PostToolUse", AUDIT_SCRIPT, AUDIT_HOOK_NAME),
+    ("PostToolUseFailure", AUDIT_SCRIPT, AUDIT_HOOK_NAME),
+)
+
+
+def managed_qwen_removals(
+    hooks: QwenHooks, agent_id: Optional[str] = None
+) -> List[ManagedRemoval]:
+    removals: List[ManagedRemoval] = []
+    for event, script_name, hook_name in _EVENT_CONTRACTS:
+        for group_index, group in enumerate(hooks.get(event, [])):
+            handlers = group["hooks"]
+            indexes = tuple(
+                index
+                for index, handler in enumerate(handlers)
+                if (
+                    reference := _managed_reference(
+                        handler, script_name, hook_name, True
+                    )
+                )
+                is not None
+                and (
+                    agent_id is None
+                    or same_qwen_agent_id(reference.agent_id, agent_id)
                 )
             )
+            if indexes:
+                removals.append(ManagedRemoval(
+                    event,
+                    group_index,
+                    indexes,
+                    (_exact_current_group(group) or _exact_legacy_group(group))
+                    and len(indexes) == len(handlers),
+                ))
+    return removals
+
+
+def _references_for_event(
+    groups: List[JsonObject], script_name: str, hook_name: str
+) -> Dict[str, List[QwenRuntimeReference]]:
+    references: Dict[str, List[QwenRuntimeReference]] = {}
+    for group in groups:
+        if not _exact_current_group(group):
+            continue
+        for handler in group["hooks"]:
+            reference = _current_reference(handler, script_name, hook_name)
+            if reference is None:
+                continue
+            key = os.path.normcase(reference.agent_id)
+            references.setdefault(key, []).append(reference)
+    return references
+
+
+def qwen_runtime_contracts(hooks: QwenHooks) -> List[QwenRuntimeContract]:
+    guards = _references_for_event(
+        hooks.get("PreToolUse", []), GUARD_SCRIPT, GUARD_HOOK_NAME
+    )
+    posts = _references_for_event(
+        hooks.get("PostToolUse", []), AUDIT_SCRIPT, AUDIT_HOOK_NAME
+    )
+    failures = _references_for_event(
+        hooks.get("PostToolUseFailure", []), AUDIT_SCRIPT, AUDIT_HOOK_NAME
+    )
+    contracts: List[QwenRuntimeContract] = []
+    for key, guard in guards.items():
+        post = posts.get(key, [])
+        failure = failures.get(key, [])
+        if len(guard) != 1 or len(post) != 1 or len(failure) != 1:
+            continue
+        if not same_qwen_path(post[0].script_path, failure[0].script_path):
+            continue
+        contracts.append(QwenRuntimeContract(
+            guard[0].agent_id,
+            guard[0].script_path,
+            post[0].script_path,
+        ))
     return contracts
