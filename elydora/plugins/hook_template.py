@@ -39,11 +39,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-ORG_ID = {org_id!r}
 AGENT_ID = {agent_id!r}
 AGENT_NAME = {agent_name!r}
-KID = {kid!r}
-BASE_URL = {base_url!r}
 SUCCESS_OUTPUT = {success_output!r}
 FAIL_CLOSED = {fail_closed!r}
 NATIVE_PAYLOAD = {native_payload!r}
@@ -139,27 +136,16 @@ def generate_uuidv7():
 
 
 def log_error(error):
-    descriptor = -1
     try:
         message = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         message += " [elydora-hook] " + repr(error) + "\\n"
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
-        flags |= getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(ERROR_LOG_PATH, flags, 0o600)
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("Error log path is not a physical file: " + ERROR_LOG_PATH)
-        with os.fdopen(descriptor, "a", encoding="utf-8") as file:
-            descriptor = -1
-            file.write(message)
-        if os.name != "nt":
-            os.chmod(ERROR_LOG_PATH, 0o600)
+        append_protected_text(ERROR_LOG_PATH, "Error log", message)
     except Exception as log_failure:
-        sys.stderr.write("[Elydora audit] Failed to write error log: " + str(log_failure) + "\\n")
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        sys.stderr.write(
+            "[Elydora audit] Failed to write error log: "
+            + str(log_failure)
+            + "\\n"
+        )
 
 
 def read_chain_state():
@@ -168,64 +154,30 @@ def read_chain_state():
             CHAIN_STATE_PATH,
             "Chain state",
             MAX_PROTECTED_CONFIG_BYTES,
-            require_private_permissions=False,
         ).decode("utf-8")
     except FileNotFoundError:
         return ZERO_CHAIN_HASH
     except Exception as error:
-        if FAIL_CLOSED:
-            raise RuntimeError("Failed to read chain state: " + str(error)) from error
-        log_error(error)
-        return ZERO_CHAIN_HASH
+        raise RuntimeError("Failed to read chain state: " + str(error)) from error
     try:
         state = json.loads(raw)
     except (json.JSONDecodeError, ValueError) as error:
-        if FAIL_CLOSED:
-            raise RuntimeError("Chain state is invalid JSON: " + str(error)) from error
-        log_error(error)
-        return ZERO_CHAIN_HASH
+        raise RuntimeError("Chain state is invalid JSON: " + str(error)) from error
     previous = state.get("prev_chain_hash") if isinstance(state, dict) else None
     if not isinstance(previous, str) or re.fullmatch(r"[A-Za-z0-9_-]{{43}}", previous) is None:
-        error = ValueError("Chain state contains an invalid prev_chain_hash")
-        if FAIL_CLOSED:
-            raise error
-        log_error(error)
-        return ZERO_CHAIN_HASH
+        raise ValueError("Chain state contains an invalid prev_chain_hash")
     return previous
 
 
 def write_chain_state(chain_hash):
-    token = os.urandom(8).hex()
-    temporary_path = CHAIN_STATE_PATH + "." + str(os.getpid()) + "." + token + ".tmp"
-    descriptor = -1
-    try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        descriptor = os.open(temporary_path, flags, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-            descriptor = -1
-            json.dump({{"prev_chain_hash": chain_hash}}, file)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temporary_path, CHAIN_STATE_PATH)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        try:
-            os.remove(temporary_path)
-        except FileNotFoundError:
-            pass
+    write_protected_json(
+        CHAIN_STATE_PATH,
+        "Chain state",
+        {{"prev_chain_hash": chain_hash}},
+    )
 
 
 def read_runtime_config():
-    if not FAIL_CLOSED:
-        return {{
-            "org_id": ORG_ID,
-            "agent_id": AGENT_ID,
-            "agent_name": AGENT_NAME,
-            "kid": KID,
-            "base_url": BASE_URL,
-            "token": "",
-        }}
     try:
         raw = read_protected_file(
             CONFIG_PATH,
@@ -237,7 +189,9 @@ def read_runtime_config():
         raise RuntimeError("Failed to read agent config: " + str(error)) from error
     if not isinstance(config, dict):
         raise ValueError("Agent config must contain a JSON object")
-    if config.get("agent_id") != AGENT_ID or config.get("agent_name") != AGENT_NAME:
+    if config.get("agent_id") != AGENT_ID:
+        raise ValueError("Agent config identity does not match the generated audit hook")
+    if AGENT_NAME and config.get("agent_name") != AGENT_NAME:
         raise ValueError("Agent config identity does not match the generated audit hook")
     for field in ("org_id", "agent_id", "kid"):
         if not isinstance(config.get(field), str) or not config[field]:
@@ -245,8 +199,28 @@ def read_runtime_config():
     base_url = config.get("base_url", "https://api.elydora.com")
     if not isinstance(base_url, str):
         raise ValueError("Agent config base_url must be a string")
-    if urllib.parse.urlsplit(base_url).scheme not in ("http", "https"):
-        raise ValueError("Agent config base_url must use HTTP or HTTPS")
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as error:
+        raise ValueError(
+            "Agent config base_url must be an absolute HTTP or HTTPS URL"
+        ) from error
+    invalid_character = "\\\\" in base_url or any(
+        character.isspace() or ord(character) < 32 for character in base_url
+    )
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or hostname is None
+        or invalid_character
+    ):
+        raise ValueError("Agent config base_url must be an absolute HTTP or HTTPS URL")
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        raise ValueError(
+            "Agent config base_url must exclude credentials, query parameters, and fragments"
+        )
     if not isinstance(config.get("token", ""), str):
         raise ValueError("Agent config token must be a string")
     return config

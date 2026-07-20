@@ -78,7 +78,7 @@ elydora install \
 
 Credential options may be omitted in an interactive terminal; the CLI then reads the private key and optional API token through hidden prompts. Credential files must contain one UTF-8 line of at most 64 KiB. Unix credential files require owner-only permissions such as `chmod 600`. The installed signing key is stored once at `~/.elydora/<agent-id>/private.key` with mode `0600`, and generated audit hooks read that file at runtime.
 
-Codex performs a one-time trust review for user hooks. Run `/hooks` in Codex after installation and trust the Elydora `PreToolUse` and `PostToolUse` definitions.
+Codex installation writes exact `PreToolUse` and `PostToolUse` command groups to `$CODEX_HOME/hooks.json` (`~/.codex/hooks.json` by default) and preserves the complete native event payload. A configured `CODEX_HOME` follows Codex's existing-directory canonicalization rule. User TOML, project, plugin, and managed sources remain unchanged and continue loading additively. The hook file, generated runtimes, runtime config, and private key commit as one rollback-capable update. Run `/hooks` after installation and approve both Elydora definition hashes.
 
 Cursor installation writes native global `preToolUse`, `postToolUse`, and `postToolUseFailure` handlers to `~/.cursor/hooks.json`. Elydora forwards Cursor's native success and failure payloads, preserves unrelated user hooks, and leaves project and enterprise sources unchanged. The generated guard and audit handlers use a 10-second fail-closed boundary, exact freeze exit-code propagation, protected runtime credentials, and one rollback-capable transaction for all runtime and hook configuration files.
 

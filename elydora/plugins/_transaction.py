@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-import stat
 import tempfile
 from typing import List, Optional, Sequence
 from uuid import uuid4
+
+from ._managed_files import (
+    MAX_SOURCE_BYTES,
+    ensure_physical_directory,
+    physical_file_exists,
+    read_physical_file,
+)
 
 
 @dataclass(frozen=True)
@@ -18,6 +24,9 @@ class FileChange:
     next_source: Optional[str]
     mode: int
     original_mode: Optional[int]
+    original_device: Optional[int]
+    original_inode: Optional[int]
+    maximum_bytes: int
 
 
 @dataclass
@@ -28,23 +37,13 @@ class _StagedChange:
     committed: bool = False
 
 
-def read_optional(file_path: str, label: str) -> Optional[str]:
-    try:
-        with open(file_path, "r", encoding="utf-8", newline="") as file:
-            return file.read()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise OSError(f"Read {label} at {file_path}: {error}") from error
-
-
-def _existing_mode(file_path: str) -> Optional[int]:
-    try:
-        return stat.S_IMODE(os.stat(file_path).st_mode)
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise OSError(f"Read file mode at {file_path}: {error}") from error
+def read_optional(
+    file_path: str,
+    label: str,
+    maximum_bytes: int = MAX_SOURCE_BYTES,
+) -> Optional[str]:
+    snapshot = read_physical_file(file_path, label, maximum_bytes)
+    return None if snapshot is None else snapshot.contents
 
 
 def source_change(
@@ -53,16 +52,24 @@ def source_change(
     original: Optional[str],
     next_source: Optional[str],
     mode: int,
+    maximum_bytes: int = MAX_SOURCE_BYTES,
 ) -> Optional[FileChange]:
     if original == next_source:
         return None
+    snapshot = read_physical_file(file_path, label, maximum_bytes)
+    current = None if snapshot is None else snapshot.contents
+    if current != original:
+        raise OSError(f"{label} changed before staging: {file_path}")
     return FileChange(
         file_path,
         label,
         original,
         next_source,
         mode,
-        _existing_mode(file_path),
+        None if snapshot is None else snapshot.mode,
+        None if snapshot is None else snapshot.device,
+        None if snapshot is None else snapshot.inode,
+        maximum_bytes,
     )
 
 
@@ -71,13 +78,16 @@ def file_change(
     label: str,
     next_source: Optional[str],
     mode: int,
+    maximum_bytes: int = MAX_SOURCE_BYTES,
 ) -> Optional[FileChange]:
+    snapshot = read_physical_file(file_path, label, maximum_bytes)
     return source_change(
         file_path,
         label,
-        read_optional(file_path, label),
+        None if snapshot is None else snapshot.contents,
         next_source,
         mode,
+        maximum_bytes,
     )
 
 
@@ -137,20 +147,24 @@ def _write_staged(
 
 
 def _assert_unchanged(change: FileChange) -> None:
-    current = read_optional(change.file_path, change.label)
-    if current != change.original:
+    snapshot = read_physical_file(
+        change.file_path,
+        change.label,
+        change.maximum_bytes,
+    )
+    current = None if snapshot is None else snapshot.contents
+    identity_changed = snapshot is not None and (
+        snapshot.device != change.original_device
+        or snapshot.inode != change.original_inode
+    )
+    if current != change.original or identity_changed:
         raise OSError(f"{change.label} changed during installation: {change.file_path}")
 
 
 def _stage(change: FileChange) -> _StagedChange:
     _assert_unchanged(change)
     directory = os.path.dirname(change.file_path)
-    try:
-        os.makedirs(directory, mode=0o700, exist_ok=True)
-    except OSError as error:
-        raise OSError(
-            f"Create directory for {change.label} at {directory}: {error}"
-        ) from error
+    ensure_physical_directory(directory, f"{change.label} directory")
     basename = os.path.basename(change.file_path)
     temporary_path = None
     rollback_path = None
@@ -258,12 +272,7 @@ def write_changes(changes: Sequence[FileChange], label: str) -> None:
 
 
 def regular_file_exists(file_path: str, label: str) -> bool:
-    try:
-        return stat.S_ISREG(os.stat(file_path).st_mode)
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise OSError(f"Read {label} at {file_path}: {error}") from error
+    return physical_file_exists(file_path, label)
 
 
 def require_runtime(file_path: str, label: str) -> None:

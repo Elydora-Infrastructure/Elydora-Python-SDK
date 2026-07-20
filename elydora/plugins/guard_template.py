@@ -65,15 +65,29 @@ def read_input():
     if not raw.strip():
         if FAIL_CLOSED:
             raise ValueError("Hook input is empty")
+        sys.stderr.write(
+            "[Elydora guard] Hook input is empty; "
+            "enforcement continued in fail-open mode.\\n"
+        )
         return
     try:
         value = json.loads(raw)
     except (json.JSONDecodeError, ValueError) as error:
         if FAIL_CLOSED:
             raise ValueError("Hook input is invalid JSON: " + str(error)) from error
+        sys.stderr.write(
+            "[Elydora guard] Hook input is invalid JSON; "
+            "enforcement continued in fail-open mode: " + str(error) + "\\n"
+        )
         return
-    if FAIL_CLOSED and not isinstance(value, dict):
-        raise ValueError("Hook input must contain a JSON object")
+    if not isinstance(value, dict):
+        if FAIL_CLOSED:
+            raise ValueError("Hook input must contain a JSON object")
+        sys.stderr.write(
+            "[Elydora guard] Hook input must contain a JSON object; "
+            "enforcement continued in fail-open mode.\\n"
+        )
+        return
 
 
 def read_config():
@@ -102,7 +116,6 @@ def read_status_cache():
             STATUS_CACHE_PATH,
             "Status cache",
             MAX_PROTECTED_CONFIG_BYTES,
-            require_private_permissions=False,
         ).decode("utf-8")
     except FileNotFoundError:
         return None
@@ -124,34 +137,39 @@ def read_status_cache():
 
 
 def write_status_cache(status):
-    token = os.urandom(8).hex()
-    temporary_path = STATUS_CACHE_PATH + "." + str(os.getpid()) + "." + token + ".tmp"
-    descriptor = -1
-    try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        descriptor = os.open(temporary_path, flags, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-            descriptor = -1
-            json.dump({{"status": status, "cached_at": time.time()}}, file)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temporary_path, STATUS_CACHE_PATH)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        try:
-            os.remove(temporary_path)
-        except FileNotFoundError:
-            pass
+    write_protected_json(
+        STATUS_CACHE_PATH,
+        "Status cache",
+        {{"status": status, "cached_at": time.time()}},
+    )
 
 
 def resolve_remote_status(config):
     base_url = config.get("base_url", "https://api.elydora.com")
     if not isinstance(base_url, str):
         raise ValueError("Agent config base_url must be a string")
-    parsed = urllib.parse.urlsplit(base_url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("Agent config base_url must use HTTP or HTTPS")
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as error:
+        raise ValueError(
+            "Agent config base_url must be an absolute HTTP or HTTPS URL"
+        ) from error
+    invalid_character = "\\\\" in base_url or any(
+        character.isspace() or ord(character) < 32 for character in base_url
+    )
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or hostname is None
+        or invalid_character
+    ):
+        raise ValueError("Agent config base_url must be an absolute HTTP or HTTPS URL")
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        raise ValueError(
+            "Agent config base_url must exclude credentials, query parameters, and fragments"
+        )
     token = config.get("token", "")
     if not isinstance(token, str):
         raise ValueError("Agent config token must be a string")

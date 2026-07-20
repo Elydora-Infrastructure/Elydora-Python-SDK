@@ -44,7 +44,9 @@ def create_guard(tmp_path: Path, status: str) -> tuple[Path, ThreadingHTTPServer
         "agent_id": AGENT_ID,
         "base_url": f"http://127.0.0.1:{server.server_port}",
     }
-    (agent_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    config_path = agent_dir / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    os.chmod(config_path, 0o600)
 
     script_path = tmp_path / "guard.py"
     script_path.write_text(
@@ -54,7 +56,11 @@ def create_guard(tmp_path: Path, status: str) -> tuple[Path, ThreadingHTTPServer
     return script_path, server
 
 
-def run_guard(script_path: Path, home_dir: Path) -> subprocess.CompletedProcess[str]:
+def run_guard(
+    script_path: Path,
+    home_dir: Path,
+    payload: str = "{}",
+) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "HOME": str(home_dir),
@@ -65,7 +71,7 @@ def run_guard(script_path: Path, home_dir: Path) -> subprocess.CompletedProcess[
         capture_output=True,
         check=False,
         env=env,
-        input="",
+        input=payload,
         text=True,
     )
 
@@ -102,6 +108,7 @@ def test_cached_frozen_status_uses_blocking_exit_code(tmp_path: Path) -> None:
         json.dumps({"status": "frozen", "cached_at": time.time()}),
         encoding="utf-8",
     )
+    os.chmod(cache_path, 0o600)
     try:
         result = run_guard(script_path, tmp_path)
     finally:
@@ -110,3 +117,29 @@ def test_cached_frozen_status_uses_blocking_exit_code(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "Tool execution blocked" in result.stderr
+
+
+def test_fail_open_guard_reports_malformed_input(tmp_path: Path) -> None:
+    script_path, server = create_guard(tmp_path, "active")
+    try:
+        result = run_guard(script_path, tmp_path, "{ malformed")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0
+    assert "invalid JSON" in result.stderr
+    assert "fail-open" in result.stderr
+
+
+def test_fail_open_guard_reports_non_object_input(tmp_path: Path) -> None:
+    script_path, server = create_guard(tmp_path, "active")
+    try:
+        result = run_guard(script_path, tmp_path, "[]")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0
+    assert "JSON object" in result.stderr
+    assert "fail-open" in result.stderr

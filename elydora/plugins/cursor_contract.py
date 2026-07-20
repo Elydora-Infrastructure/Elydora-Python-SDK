@@ -9,13 +9,14 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+from ._strict_json import JsonObject, parse_json_object
+
 
 AGENT_KEY = "cursor"
 GUARD_SCRIPT = "guard.py"
 AUDIT_SCRIPT = "hook.py"
 HOOK_TIMEOUT_SECONDS = 10
 
-JsonObject = Dict[str, Any]
 CursorHooks = Dict[str, List[JsonObject]]
 
 
@@ -46,10 +47,6 @@ class RuntimeContract:
 class _ParsedArgument:
     value: str
     next_index: int
-
-
-class _DuplicateKey(ValueError):
-    pass
 
 
 def runtime_root() -> str:
@@ -109,7 +106,10 @@ def _read_posix_argument(command: str, start: int) -> Optional[_ParsedArgument]:
 
 def _parse_posix_command(command: str) -> Optional[Tuple[str, str]]:
     executable = _read_posix_argument(command, 0)
-    if executable is None or command[executable.next_index:executable.next_index + 1] != " ":
+    if (
+        executable is None
+        or command[executable.next_index : executable.next_index + 1] != " "
+    ):
         return None
     script = _read_posix_argument(command, executable.next_index + 1)
     if script is None or script.next_index != len(command):
@@ -142,10 +142,13 @@ def _parse_powershell_command(command: str) -> Optional[Tuple[str, str]]:
     if not command.startswith("& "):
         return None
     executable = _read_powershell_argument(command, 2)
-    if executable is None or command[executable.next_index:executable.next_index + 1] != " ":
+    if (
+        executable is None
+        or command[executable.next_index : executable.next_index + 1] != " "
+    ):
         return None
     script = _read_powershell_argument(command, executable.next_index + 1)
-    if script is None or command[script.next_index:] != "; exit $LASTEXITCODE":
+    if script is None or command[script.next_index :] != "; exit $LASTEXITCODE":
         return None
     return executable.value, script.value
 
@@ -196,27 +199,6 @@ def _managed_agent_id(
     return agent_id if agent_id not in {"", ".", ".."} else None
 
 
-def _unique_object(pairs: List[Tuple[str, Any]]) -> JsonObject:
-    result: JsonObject = {}
-    for key, value in pairs:
-        if key in result:
-            raise _DuplicateKey(f'duplicate field "{key}"')
-        result[key] = value
-    return result
-
-
-def parse_json_object(raw: str, label: str) -> JsonObject:
-    try:
-        value = json.loads(raw, object_pairs_hook=_unique_object)
-    except _DuplicateKey as error:
-        raise ValueError(f"Failed to parse {label}: {error}") from error
-    except json.JSONDecodeError as error:
-        raise ValueError(f"Failed to parse {label}: {error}") from error
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must contain a JSON object")
-    return value
-
-
 def _read_hooks(value: Any, label: str) -> CursorHooks:
     if value is None:
         raise ValueError(f'{label} field "hooks" must be an object')
@@ -227,9 +209,7 @@ def _read_hooks(value: Any, label: str) -> CursorHooks:
         if not isinstance(handlers, list):
             raise ValueError(f'{label} field "hooks.{event}" must be an array')
         if not all(isinstance(handler, dict) for handler in handlers):
-            raise ValueError(
-                f'{label} field "hooks.{event}" must contain objects'
-            )
+            raise ValueError(f'{label} field "hooks.{event}" must contain objects')
         hooks[event] = list(handlers)
     return hooks
 
@@ -344,9 +324,11 @@ def runtime_contracts(hooks: CursorHooks) -> List[RuntimeContract]:
         if key not in audits or key not in failures:
             continue
         agent_directory = os.path.join(runtime_root(), agent_id)
-        contracts.append(RuntimeContract(
-            agent_id,
-            os.path.join(agent_directory, GUARD_SCRIPT),
-            os.path.join(agent_directory, AUDIT_SCRIPT),
-        ))
+        contracts.append(
+            RuntimeContract(
+                agent_id,
+                os.path.join(agent_directory, GUARD_SCRIPT),
+                os.path.join(agent_directory, AUDIT_SCRIPT),
+            )
+        )
     return contracts

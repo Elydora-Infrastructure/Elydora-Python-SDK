@@ -1,415 +1,236 @@
-"""OpenAI Codex lifecycle-hook integration."""
+"""OpenAI Codex native user-hook integration."""
 
 from __future__ import annotations
 
+import base64
 import json
 import os
-import shlex
-import stat
-# subprocess provides argument quoting only; this module starts no process.
-import subprocess  # nosec B404
-import sys
-import tempfile
-from typing import Any, Dict, List, Optional
+import urllib.parse
+from typing import List, Optional
 
+from elydora._runtime_paths import resolve_agent_directory
+from elydora.utils import base64url_encode
+
+from ._managed_files import MAX_CONFIG_BYTES, MAX_SECRET_BYTES
+from ._transaction import FileChange
 from .base import AgentPlugin, InstallConfig, PluginStatus
-from .hook_template import generate_hook_script
+from .codex_contract import (
+    AGENT_KEY,
+    AUDIT_SCRIPT,
+    AUDIT_STATUS,
+    GUARD_SCRIPT,
+    GUARD_STATUS,
+    build_handler,
+    remove_managed_hooks,
+    render_document,
+    runtime_contracts,
+    runtime_root,
+    same_path,
+)
+from .codex_io import (
+    read_document,
+    rendered_change,
+    runtime_change,
+    runtime_files_exist,
+    validate_hooks_directory,
+    validate_runtime_tree,
+    write_codex_changes,
+)
+from .hook_template import generate_guard_script, generate_hook_script
 
 
-AGENT_KEY = "codex"
-OWNED_DESCRIPTION = "Elydora audit and freeze enforcement"
-GUARD_STATUS = "Checking Elydora agent state"
-AUDIT_STATUS = "Recording Elydora tool use"
-GUARD_SCRIPT = "guard.py"
-AUDIT_SCRIPT = "hook.py"
-ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
-CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".codex", "hooks.json")
-
-JsonObject = Dict[str, Any]
-
-
-def _read_json(path: str, label: str) -> Optional[JsonObject]:
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            raw = file.read()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise OSError(f"Read {label} at {path}: {error}") from error
-
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as error:
-        raise ValueError(f"Failed to parse {label} at {path}: {error}") from error
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} at {path} must contain a JSON object")
+def _runtime_config(config: InstallConfig, agent_id: str) -> dict:
+    value = {
+        "org_id": config.get("org_id", ""),
+        "agent_id": agent_id,
+        "kid": config.get("kid", ""),
+        "base_url": config.get("base_url", "https://api.elydora.com"),
+        "agent_name": AGENT_KEY,
+    }
+    token = config.get("token")
+    if token:
+        value["token"] = token
     return value
 
 
-def _cleanup_failed_write(path: str, label: str, cause: Exception) -> None:
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        return
-    except OSError as cleanup_error:
-        raise OSError(
-            f"Write {label} failed: {cause}; cleanup of {path} failed: {cleanup_error}"
-        ) from cause
+def _json_source(value: dict) -> str:
+    return json.dumps(value, indent=2) + "\n"
 
 
-def _write_text_atomic(path: str, content: str, mode: int, label: str) -> None:
-    directory = os.path.dirname(path)
-    try:
-        os.makedirs(directory, mode=0o700, exist_ok=True)
-    except OSError as error:
-        raise OSError(f"Create directory for {label} at {directory}: {error}") from error
-
-    descriptor = -1
-    temporary_path = ""
-    try:
-        descriptor, temporary_path = tempfile.mkstemp(
-            prefix=f".{os.path.basename(path)}.",
-            suffix=".tmp",
-            dir=directory,
-            text=True,
-        )
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
-            descriptor = -1
-            file.write(content)
-            file.flush()
-            os.fsync(file.fileno())
-        os.chmod(temporary_path, mode)
-        os.replace(temporary_path, path)
-    except Exception as error:
-        if descriptor >= 0:
-            try:
-                os.close(descriptor)
-            except OSError as close_error:
-                _cleanup_failed_write(temporary_path, label, close_error)
-                raise OSError(
-                    f"Write {label} at {path} failed: {error}; "
-                    f"close failed: {close_error}"
-                ) from error
-        _cleanup_failed_write(temporary_path, label, error)
-        raise OSError(f"Write {label} at {path}: {error}") from error
+def _present(changes: List[Optional[FileChange]]) -> List[FileChange]:
+    return [change for change in changes if change is not None]
 
 
-def _write_json_atomic(path: str, value: JsonObject, mode: int, label: str) -> None:
-    encoded = json.dumps(value, indent=2) + "\n"
-    _write_text_atomic(path, encoded, mode, label)
-
-
-def _remove_file(path: str, label: str) -> None:
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        return
-    except OSError as error:
-        raise OSError(f"Remove {label} at {path}: {error}") from error
-
-
-def _regular_file_exists(path: str, label: str) -> bool:
-    try:
-        metadata = os.stat(path)
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise OSError(f"Read {label} at {path}: {error}") from error
-    return stat.S_ISREG(metadata.st_mode)
-
-
-def _require_runtime(path: str, label: str) -> None:
-    if not path:
-        raise ValueError(f"{label} path is required")
-    if not _regular_file_exists(path, label):
-        raise FileNotFoundError(f"{label} is missing: {path}")
-
-
-def _build_handler(script_path: str, status_message: str) -> JsonObject:
-    return {
-        "type": "command",
-        "command": f"{shlex.quote(sys.executable)} {shlex.quote(script_path)}",
-        "commandWindows": subprocess.list2cmdline([sys.executable, script_path]),
-        "timeout": 10,
-        "statusMessage": status_message,
-    }
-
-
-def _hooks_object(settings: JsonObject) -> JsonObject:
-    if "hooks" not in settings:
-        return {}
-    hooks = settings["hooks"]
-    if not isinstance(hooks, dict):
-        raise ValueError('Codex hooks config field "hooks" must be an object')
-    return dict(hooks)
-
-
-def _event_groups(hooks: JsonObject, event: str) -> List[JsonObject]:
-    if event not in hooks:
-        return []
-    groups = hooks[event]
-    if not isinstance(groups, list) or not all(
-        isinstance(group, dict) for group in groups
-    ):
-        raise ValueError(
-            f'Codex hooks config field "hooks.{event}" must be an array of objects'
-        )
-    return groups
-
-
-def _is_managed_command(command: Any, script_name: str, agent_id: str = "") -> bool:
-    if not isinstance(command, str):
-        return False
-    normalized = os.path.normcase(command)
-    if ".elydora" not in normalized or script_name.lower() not in normalized.lower():
-        return False
+def _agent_paths(config: InstallConfig) -> tuple[str, str, str, str]:
+    agent_id = config.get("agent_id", "")
     if not agent_id:
-        return True
-    expected_path = os.path.normcase(
-        os.path.join(ELYDORA_DIR, agent_id, script_name)
-    )
-    return expected_path in normalized
+        raise ValueError("agent_id is required")
+    agent_directory = resolve_agent_directory(runtime_root(), agent_id)
+    guard_path = os.path.join(agent_directory, GUARD_SCRIPT)
+    audit_path = os.path.join(agent_directory, AUDIT_SCRIPT)
+    configured_guard = config.get("guard_script_path", "")
+    if not same_path(configured_guard, guard_path):
+        raise ValueError(
+            f"Elydora guard runtime must use the managed agent directory: {guard_path}"
+        )
+    return agent_id, agent_directory, guard_path, audit_path
 
 
-def _is_elydora_handler(handler: JsonObject, agent_id: str = "") -> bool:
-    status_message = handler.get("statusMessage")
-    if status_message == GUARD_STATUS:
-        script_name = GUARD_SCRIPT
-    elif status_message == AUDIT_STATUS:
-        script_name = AUDIT_SCRIPT
-    else:
-        return False
-    return any(
-        _is_managed_command(handler.get(key), script_name, agent_id)
-        for key in ("command", "commandWindows")
-    )
-
-
-def _without_elydora(
-    groups: List[JsonObject],
-    agent_id: str = "",
-) -> List[JsonObject]:
-    filtered_groups: List[JsonObject] = []
-    for group in groups:
-        handlers = group.get("hooks")
-        if not isinstance(handlers, list) or not all(
-            isinstance(handler, dict) for handler in handlers
-        ):
-            raise ValueError("Codex hook matcher group must contain a hooks array")
-        filtered = [
-            handler
-            for handler in handlers
-            if not _is_elydora_handler(handler, agent_id)
-        ]
-        if filtered:
-            filtered_groups.append({**group, "hooks": filtered})
-    return filtered_groups
-
-
-def _find_handler(
-    groups: List[JsonObject],
-    status_message: str,
-) -> Optional[JsonObject]:
-    for group in groups:
-        handlers = group.get("hooks")
-        if not isinstance(handlers, list) or not all(
-            isinstance(handler, dict) for handler in handlers
-        ):
-            raise ValueError("Codex hook matcher group must contain a hooks array")
-        for handler in handlers:
-            if (
-                handler.get("statusMessage") == status_message
-                and _is_elydora_handler(handler)
-            ):
-                return handler
-    return None
-
-
-def _command_references(handler: JsonObject, script_path: str) -> bool:
-    return any(
-        isinstance(handler.get(key), str) and script_path in handler[key]
-        for key in ("command", "commandWindows")
-    )
-
-
-def _is_owned_settings(settings: JsonObject, hooks: JsonObject) -> bool:
-    settings_keys = {"description", "hooks"}
-    hook_keys = {"PreToolUse", "PostToolUse"}
-    return (
-        all(key in settings_keys for key in settings)
-        and settings.get("description") == OWNED_DESCRIPTION
-        and all(key in hook_keys for key in hooks)
-        and all(isinstance(value, list) and not value for value in hooks.values())
-    )
-
-
-def _runtime_scripts_exist(guard: JsonObject, audit: JsonObject) -> bool:
+def _validate_private_key(value: str) -> None:
     try:
-        with os.scandir(ELYDORA_DIR) as iterator:
-            entries = sorted(iterator, key=lambda entry: entry.name)
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise OSError(
-            f"Read Elydora runtime directory at {ELYDORA_DIR}: {error}"
+        padded = value + "=" * ((4 - len(value) % 4) % 4)
+        seed = base64.b64decode(
+            padded.replace("-", "+").replace("_", "/"),
+            validate=True,
+        )
+    except (ValueError, UnicodeEncodeError) as error:
+        raise ValueError(
+            "private_key must be a canonical 32-byte base64url value"
         ) from error
+    if len(seed) != 32 or base64url_encode(seed) != value:
+        raise ValueError("private_key must be a canonical 32-byte base64url value")
 
-    for entry in entries:
-        try:
-            is_directory = entry.is_dir(follow_symlinks=False)
-        except OSError as error:
-            raise OSError(
-                f"Read Elydora runtime entry at {entry.path}: {error}"
-            ) from error
-        if not is_directory:
-            continue
 
-        guard_path = os.path.join(entry.path, GUARD_SCRIPT)
-        hook_path = os.path.join(entry.path, AUDIT_SCRIPT)
-        if not (
-            _command_references(guard, guard_path)
-            and _command_references(audit, hook_path)
-        ):
-            continue
+def _validate_install_config(config: InstallConfig) -> None:
+    for field in ("org_id", "agent_id", "kid", "private_key", "base_url"):
+        value = config.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field} is required")
+    if config.get("agent_name") != AGENT_KEY:
+        raise ValueError(f"Codex installation requires agent_name {AGENT_KEY}")
+    _validate_private_key(config["private_key"])
 
-        config_path = os.path.join(entry.path, "config.json")
-        config = _read_json(config_path, "Elydora runtime config")
-        if config is None:
-            continue
-        agent_name = config.get("agent_name")
-        if not isinstance(agent_name, str):
-            raise ValueError(
-                f'Elydora runtime config at {config_path} field "agent_name" '
-                "must be a string"
-            )
-        if agent_name != AGENT_KEY:
-            continue
-        return _regular_file_exists(
-            guard_path, "Elydora guard runtime"
-        ) and _regular_file_exists(hook_path, "Elydora audit runtime")
-    return False
+    base_url = config["base_url"]
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        hostname = parsed.hostname
+        parsed.port
+        has_credentials = parsed.username is not None or parsed.password is not None
+    except ValueError as error:
+        raise ValueError("base_url must be an absolute HTTP or HTTPS URL") from error
+    invalid_character = "\\" in base_url or any(
+        character.isspace() or ord(character) < 32 for character in base_url
+    )
+    valid_origin = (
+        parsed.scheme in ("http", "https")
+        and bool(parsed.netloc)
+        and hostname is not None
+        and not invalid_character
+    )
+    if not valid_origin:
+        raise ValueError("base_url must be an absolute HTTP or HTTPS URL")
+    if has_credentials or parsed.query or parsed.fragment:
+        raise ValueError(
+            "base_url must exclude credentials, query parameters, and fragments"
+        )
+
+    if "token" in config:
+        token = config["token"]
+        if not isinstance(token, str) or not token:
+            raise ValueError("token must be a non-empty string when provided")
+    _agent_paths(config)
 
 
 class CodexPlugin(AgentPlugin):
-    """Install Elydora into Codex user lifecycle hooks."""
+    """Install Elydora into Codex's native global user hooks."""
+
+    manages_guard_runtime = True
+
+    def preflight_install(self, config: InstallConfig) -> None:
+        _validate_install_config(config)
+        document = read_document()
+        validate_hooks_directory(document.file_path)
+        agent_id, agent_directory, _, _ = _agent_paths(config)
+        validate_runtime_tree(runtime_root(), agent_directory, agent_id)
 
     def install(self, config: InstallConfig) -> None:
-        agent_id = config.get("agent_id", "")
-        if not agent_id:
-            raise ValueError("agent_id is required")
+        self.preflight_install(config)
+        document = read_document()
+        agent_id, agent_directory, guard_path, audit_path = _agent_paths(config)
 
-        existing_settings = _read_json(CONFIG_PATH, "Codex hooks config")
-        settings = (
-            existing_settings
-            if existing_settings is not None
-            else {"description": OWNED_DESCRIPTION}
-        )
-        hooks = _hooks_object(settings)
-        pre_tool_use = _without_elydora(_event_groups(hooks, "PreToolUse"))
-        post_tool_use = _without_elydora(_event_groups(hooks, "PostToolUse"))
-
-        guard_path = config.get("guard_script_path", "")
-        _require_runtime(guard_path, "Elydora guard runtime")
-        agent_dir = os.path.join(ELYDORA_DIR, agent_id)
-        hook_path = os.path.join(agent_dir, AUDIT_SCRIPT)
+        hooks = remove_managed_hooks(document.hooks)
         hooks["PreToolUse"] = [
-            *pre_tool_use,
+            *hooks.get("PreToolUse", []),
             {
                 "matcher": "*",
-                "hooks": [_build_handler(guard_path, GUARD_STATUS)],
+                "hooks": [build_handler(guard_path, GUARD_STATUS)],
             },
         ]
         hooks["PostToolUse"] = [
-            *post_tool_use,
+            *hooks.get("PostToolUse", []),
             {
                 "matcher": "*",
-                "hooks": [_build_handler(hook_path, AUDIT_STATUS)],
+                "hooks": [build_handler(audit_path, AUDIT_STATUS)],
             },
         ]
 
-        runtime_config: JsonObject = {
-            "org_id": config.get("org_id", ""),
-            "agent_id": agent_id,
-            "kid": config.get("kid", ""),
-            "base_url": config.get("base_url", "https://api.elydora.com"),
-            "token": config.get("token", ""),
-            "agent_name": config.get("agent_name", AGENT_KEY) or AGENT_KEY,
-        }
-        hook_script = generate_hook_script(
+        guard_script = generate_guard_script(AGENT_KEY, agent_id)
+        audit_script = generate_hook_script(
             org_id=config.get("org_id", ""),
             agent_id=agent_id,
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
+            native_payload=True,
+            agent_name=AGENT_KEY,
         )
-        _write_json_atomic(
-            os.path.join(agent_dir, "config.json"),
-            runtime_config,
-            0o600,
-            "Elydora runtime config",
+        changes = _present(
+            [
+                runtime_change(
+                    guard_path,
+                    "Elydora guard runtime",
+                    guard_script,
+                    0o700,
+                ),
+                runtime_change(
+                    os.path.join(agent_directory, "config.json"),
+                    "Elydora runtime config",
+                    _json_source(_runtime_config(config, agent_id)),
+                    0o600,
+                    MAX_CONFIG_BYTES,
+                ),
+                runtime_change(
+                    os.path.join(agent_directory, "private.key"),
+                    "Elydora private key",
+                    config.get("private_key", ""),
+                    0o600,
+                    MAX_SECRET_BYTES,
+                ),
+                runtime_change(
+                    audit_path,
+                    "Elydora audit runtime",
+                    audit_script,
+                    0o700,
+                ),
+                rendered_change(render_document(document, hooks)),
+            ]
         )
-        _write_text_atomic(
-            os.path.join(agent_dir, "private.key"),
-            config.get("private_key", ""),
-            0o600,
-            "Elydora private key",
-        )
-        _write_text_atomic(
-            hook_path,
-            hook_script,
-            0o700,
-            "Elydora audit runtime",
-        )
-        _write_json_atomic(
-            CONFIG_PATH,
-            {**settings, "hooks": hooks},
-            0o600,
-            "Codex hooks config",
-        )
-        print("Codex: run /hooks to review and trust the Elydora hooks.")
+        write_codex_changes(changes, "Install Codex hooks")
+        print(f"  Codex hooks: {document.file_path}")
+        print("  Codex trust: run /hooks and approve both Elydora command hooks.")
 
     def uninstall(self, agent_id: str = "") -> None:
-        settings = _read_json(CONFIG_PATH, "Codex hooks config")
-        if settings is None:
+        document = read_document()
+        hooks = remove_managed_hooks(document.hooks, agent_id)
+        change = rendered_change(render_document(document, hooks))
+        if change is None:
             return
-        hooks = _hooks_object(settings)
-        hooks["PreToolUse"] = _without_elydora(
-            _event_groups(hooks, "PreToolUse"),
-            agent_id,
-        )
-        hooks["PostToolUse"] = _without_elydora(
-            _event_groups(hooks, "PostToolUse"),
-            agent_id,
-        )
-        if _is_owned_settings(settings, hooks):
-            _remove_file(CONFIG_PATH, "Codex hooks config")
-        else:
-            _write_json_atomic(
-                CONFIG_PATH,
-                {**settings, "hooks": hooks},
-                0o600,
-                "Codex hooks config",
-            )
+        validate_hooks_directory(document.file_path)
+        write_codex_changes([change], "Uninstall Codex hooks")
 
     def status(self) -> PluginStatus:
-        settings = _read_json(CONFIG_PATH, "Codex hooks config")
-        guard: Optional[JsonObject] = None
-        audit: Optional[JsonObject] = None
-        if settings is not None:
-            hooks = _hooks_object(settings)
-            guard = _find_handler(_event_groups(hooks, "PreToolUse"), GUARD_STATUS)
-            audit = _find_handler(_event_groups(hooks, "PostToolUse"), AUDIT_STATUS)
-
-        if guard is None or audit is None:
+        document = read_document()
+        contracts = runtime_contracts(document.hooks)
+        if not contracts:
             return PluginStatus(
                 installed=False,
                 agent=AGENT_KEY,
                 details="Not installed",
             )
-        installed = _runtime_scripts_exist(guard, audit)
+        installed = runtime_files_exist(contracts)
         details = (
-            f"Config: {CONFIG_PATH}"
+            f"Config: {document.file_path}"
             if installed
-            else f"Configured at {CONFIG_PATH}; runtime scripts missing"
+            else f"Configured at {document.file_path}; runtime files missing"
         )
         return PluginStatus(
             installed=installed,
