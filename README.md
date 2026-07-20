@@ -113,7 +113,7 @@ Kiro CLI installation covers both runtime contracts. Kiro CLI v2 uses the genera
 | Cline | `cline` |
 | Kimi Code | `kimi` |
 | Grok Build | `grok` |
-| Copilot CLI | `copilot` |
+| GitHub Copilot CLI | `copilot` |
 | Cursor | `cursor` |
 | Factory Droid | `droid` |
 | Gemini CLI | `gemini` |

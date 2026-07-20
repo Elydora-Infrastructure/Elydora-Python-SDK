@@ -27,9 +27,9 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
         "config_path": "~/.cline/hooks/PreToolUse.mjs",
     },
     "copilot": {
-        "name": "Copilot CLI",
-        "hook_event": "PostToolUse",
-        "config_path": ".github/hooks/hooks.json",
+        "name": "GitHub Copilot CLI",
+        "hook_event": "preToolUse/postToolUse",
+        "config_path": "~/.copilot/hooks/elydora-audit.json",
     },
     "cursor": {
         "name": "Cursor",
