@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import math
 import os
+import re
 import shutil
 import subprocess  # nosec B404
 import sys
@@ -18,21 +19,10 @@ AUDIT_SCRIPT = "hook.py"
 HOOK_TIMEOUT_SECONDS = 10
 TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 
-_EVENT_NAMES = {
-    "PreToolUse",
-    "PostToolUse",
-    "Notification",
-    "UserPromptSubmit",
-    "Stop",
-    "SubagentStop",
-    "PreCompact",
-    "SessionStart",
-    "SessionEnd",
-}
-_FLAG_NAMES = {"hooksDisabled", "showHookOutput"}
 _HANDLER_KEYS = {"command", "timeout", "type"}
 _GROUP_KEYS = {"hooks", "matcher"}
 _REGEX_TIMEOUT_SECONDS = 10
+_WINDOWS_EXIT_SUFFIX = "; exit $LASTEXITCODE"
 _REGEX_VALIDATOR = """import fs from 'node:fs';
 const entries = JSON.parse(fs.readFileSync(0, 'utf8'));
 for (const entry of entries) {
@@ -47,7 +37,7 @@ for (const entry of entries) {
 """
 
 JsonObject = Dict[str, Any]
-DroidHookSettings = Dict[str, Any]
+DroidHookMap = Dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -65,20 +55,22 @@ class ManagedRemoval:
     remove_group: bool
 
 
-def is_object(value: Any) -> bool:
-    return isinstance(value, dict)
-
-
-def has_own(value: JsonObject, key: str) -> bool:
-    return key in value
-
-
 def elydora_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".elydora")
 
 
-def _quote_windows(value: str) -> str:
-    return '"' + value.replace('"', '\\"') + '"'
+def same_path(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
+        os.path.abspath(right)
+    )
+
+
+def same_agent_id(left: str, right: str) -> bool:
+    return os.path.normcase(left) == os.path.normcase(right)
+
+
+def _quote_power_shell(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _quote_posix(value: str) -> str:
@@ -86,8 +78,16 @@ def _quote_posix(value: str) -> str:
 
 
 def build_command(script_path: str) -> str:
-    quote = _quote_windows if os.name == "nt" else _quote_posix
-    return f"{quote(sys.executable)} {quote(script_path)}"
+    if not os.path.isabs(sys.executable) or not os.path.isabs(script_path):
+        raise ValueError(
+            "Factory Droid hook commands require absolute executable and script paths"
+        )
+    if os.name == "nt":
+        return (
+            f"& {_quote_power_shell(sys.executable)} "
+            f"{_quote_power_shell(script_path)}{_WINDOWS_EXIT_SUFFIX}"
+        )
+    return f"{_quote_posix(sys.executable)} {_quote_posix(script_path)}"
 
 
 def build_group(script_path: str) -> JsonObject:
@@ -102,25 +102,27 @@ def build_group(script_path: str) -> JsonObject:
 
 
 def _validate_handler(value: Any, label: str) -> JsonObject:
-    if not is_object(value):
+    if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
     handler = dict(value)
     if handler.get("type") != "command":
         raise ValueError(f'{label} type must be "command"')
-    if not isinstance(handler.get("command"), str):
-        raise ValueError(f"{label} command must be a string")
+    command = handler.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError(f"{label} command must be a non-empty string")
     timeout = handler.get("timeout")
     if timeout is not None and (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
         or not math.isfinite(timeout)
+        or timeout <= 0
     ):
-        raise ValueError(f"{label} timeout must be a finite number")
+        raise ValueError(f"{label} timeout must be a positive finite number")
     return handler
 
 
 def _validate_group(value: Any, label: str) -> JsonObject:
-    if not is_object(value):
+    if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
     group = dict(value)
     matcher = group.get("matcher")
@@ -139,31 +141,23 @@ def _validate_group(value: Any, label: str) -> JsonObject:
     return group
 
 
-def read_hook_settings(value: Any, label: str) -> DroidHookSettings:
-    if not is_object(value):
+def read_hook_map(value: Any, label: str) -> DroidHookMap:
+    if not isinstance(value, dict):
         raise ValueError(f"{label} must contain a JSON object")
-    settings: DroidHookSettings = dict(value)
-    for key, item in value.items():
-        if key in _FLAG_NAMES:
-            if not isinstance(item, bool):
-                raise ValueError(f'{label} field "{key}" must be a boolean')
-            continue
-        if key not in _EVENT_NAMES:
-            raise ValueError(f'{label} contains unsupported field "{key}"')
-        if not isinstance(item, list):
-            raise ValueError(f'{label} field "{key}" must be an array')
-        settings[key] = [
-            _validate_group(group, f'{label} field "{key}"[{index}]')
-            for index, group in enumerate(item)
+    hooks: DroidHookMap = {}
+    for event, groups in value.items():
+        if not isinstance(groups, list):
+            raise ValueError(f'{label} field "{event}" must be an array')
+        hooks[event] = [
+            _validate_group(group, f'{label} field "{event}"[{index}]')
+            for index, group in enumerate(groups)
         ]
-    return settings
+    return hooks
 
 
-def _regex_entries(settings: DroidHookSettings) -> List[JsonObject]:
+def _regex_entries(hooks: DroidHookMap) -> List[JsonObject]:
     entries: List[JsonObject] = []
-    for event, groups in settings.items():
-        if event in _FLAG_NAMES:
-            continue
+    for event, groups in hooks.items():
         for index, group in enumerate(groups):
             matcher = group.get("matcher")
             if isinstance(matcher, str) and matcher not in {"", "*"}:
@@ -182,8 +176,8 @@ def _regex_entries(settings: DroidHookSettings) -> List[JsonObject]:
     return entries
 
 
-def validate_javascript_regexes(settings: Sequence[DroidHookSettings]) -> None:
-    entries = [entry for source in settings for entry in _regex_entries(source)]
+def validate_javascript_regexes(sources: Sequence[DroidHookMap]) -> None:
+    entries = [entry for source in sources for entry in _regex_entries(source)]
     if not entries:
         return
     node_path = shutil.which("node")
@@ -220,20 +214,24 @@ def validate_javascript_regexes(settings: Sequence[DroidHookSettings]) -> None:
     )
 
 
-def _read_windows_argument(command: str, start: int) -> Optional[Tuple[str, int]]:
-    if start >= len(command) or command[start] != '"':
+def _read_power_shell_argument(
+    command: str,
+    start: int,
+) -> Optional[Tuple[str, int]]:
+    if start >= len(command) or command[start] != "'":
         return None
     value = ""
     index = start + 1
     while index < len(command):
-        if command[index:index + 2] == '\\"':
-            value += '"'
+        if command[index] != "'":
+            value += command[index]
+            index += 1
+            continue
+        if index + 1 < len(command) and command[index + 1] == "'":
+            value += "'"
             index += 2
             continue
-        if command[index] == '"':
-            return value, index + 1
-        value += command[index]
-        index += 1
+        return value, index + 1
     return None
 
 
@@ -257,14 +255,16 @@ def _read_posix_argument(command: str, start: int) -> Optional[Tuple[str, int]]:
     return None
 
 
-def _parse_generated_command(command: str) -> Optional[Tuple[str, str]]:
-    reader = _read_windows_argument if os.name == "nt" else _read_posix_argument
-    executable = reader(command, 0)
+def _parse_two_arguments(
+    command: str,
+    start: int,
+) -> Optional[Tuple[str, str]]:
+    executable = _read_posix_argument(command, start)
     if executable is None or executable[1] >= len(command):
         return None
     if command[executable[1]] != " ":
         return None
-    script = reader(command, executable[1] + 1)
+    script = _read_posix_argument(command, executable[1] + 1)
     if script is None or script[1] != len(command):
         return None
     if not executable[0] or not script[0]:
@@ -272,32 +272,65 @@ def _parse_generated_command(command: str) -> Optional[Tuple[str, str]]:
     return executable[0], script[0]
 
 
-def _same_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
+def _parse_power_shell_command(command: str) -> Optional[Tuple[str, str]]:
+    if not command.startswith("& "):
+        return None
+    executable = _read_power_shell_argument(command, 2)
+    if executable is None or executable[1] >= len(command):
+        return None
+    if command[executable[1]] != " ":
+        return None
+    script = _read_power_shell_argument(command, executable[1] + 1)
+    if (
+        script is None
+        or command[script[1]:] != _WINDOWS_EXIT_SUFFIX
+        or not executable[0]
+        or not script[0]
+    ):
+        return None
+    return executable[0], script[0]
+
+
+def _parse_legacy_windows_command(command: str) -> Optional[Tuple[str, str]]:
+    match = re.fullmatch(r'"([^"\r\n]+)" "([^"\r\n]+)"', command)
+    return (match.group(1), match.group(2)) if match else None
+
+
+def _parse_generated_command(
+    command: str,
+    include_legacy: bool,
+) -> Optional[Tuple[str, str]]:
+    if os.name != "nt":
+        return _parse_two_arguments(command, 0)
+    current = _parse_power_shell_command(command)
+    return current or (
+        _parse_legacy_windows_command(command) if include_legacy else None
     )
 
 
-def same_agent_id(left: str, right: str) -> bool:
-    return os.path.normcase(left) == os.path.normcase(right)
-
-
-def managed_agent_id(handler: JsonObject, script_name: str) -> Optional[str]:
+def managed_agent_id(
+    handler: JsonObject,
+    script_name: str,
+    include_legacy: bool = False,
+) -> Optional[str]:
     if set(handler) != _HANDLER_KEYS:
         return None
-    if handler.get("type") != "command" or handler.get("timeout") != 10:
+    if (
+        handler.get("type") != "command"
+        or handler.get("timeout") != HOOK_TIMEOUT_SECONDS
+    ):
         return None
     command = handler.get("command")
     if not isinstance(command, str):
         return None
-    parsed = _parse_generated_command(command)
-    if parsed is None or not _same_path(parsed[0], sys.executable):
+    parsed = _parse_generated_command(command, include_legacy)
+    if parsed is None or not same_path(parsed[0], sys.executable):
         return None
     script_path = parsed[1]
     if os.path.basename(script_path) != script_name:
         return None
     agent_directory = os.path.dirname(script_path)
-    if not _same_path(os.path.dirname(agent_directory), elydora_dir()):
+    if not same_path(os.path.dirname(agent_directory), elydora_dir()):
         return None
     agent_id = os.path.basename(agent_directory)
     return agent_id if agent_id not in {"", ".", ".."} else None
@@ -314,7 +347,7 @@ def _exact_owned_group(group: JsonObject, indexes: Tuple[int, ...]) -> bool:
 
 
 def managed_removals(
-    settings: DroidHookSettings,
+    hooks: DroidHookMap,
     agent_id: Optional[str] = None,
 ) -> List[ManagedRemoval]:
     removals: List[ManagedRemoval] = []
@@ -322,12 +355,19 @@ def managed_removals(
         ("PreToolUse", GUARD_SCRIPT),
         ("PostToolUse", AUDIT_SCRIPT),
     ):
-        for group_index, group in enumerate(settings.get(event, [])):
+        for group_index, group in enumerate(hooks.get(event, [])):
             indexes = tuple(
                 index
                 for index, handler in enumerate(group["hooks"])
                 if (
-                    (managed_id := managed_agent_id(handler, script_name)) is not None
+                    (
+                        managed_id := managed_agent_id(
+                            handler,
+                            script_name,
+                            include_legacy=True,
+                        )
+                    )
+                    is not None
                     and (agent_id is None or same_agent_id(managed_id, agent_id))
                 )
             )
@@ -350,9 +390,9 @@ def _managed_ids(groups: List[JsonObject], script_name: str) -> Set[str]:
     }
 
 
-def runtime_contracts(settings: DroidHookSettings) -> List[RuntimeContract]:
-    guards = _managed_ids(settings.get("PreToolUse", []), GUARD_SCRIPT)
-    audits = _managed_ids(settings.get("PostToolUse", []), AUDIT_SCRIPT)
+def runtime_contracts(hooks: DroidHookMap) -> List[RuntimeContract]:
+    guards = _managed_ids(hooks.get("PreToolUse", []), GUARD_SCRIPT)
+    audits = _managed_ids(hooks.get("PostToolUse", []), AUDIT_SCRIPT)
     contracts = []
     for agent_id in sorted(guards):
         if not any(same_agent_id(agent_id, audit_id) for audit_id in audits):
@@ -364,10 +404,3 @@ def runtime_contracts(settings: DroidHookSettings) -> List[RuntimeContract]:
             os.path.join(root, AUDIT_SCRIPT),
         ))
     return contracts
-
-
-def merge_hook_settings(
-    primary: Optional[DroidHookSettings],
-    fallback: Optional[DroidHookSettings],
-) -> DroidHookSettings:
-    return {**(fallback or {}), **(primary or {})}

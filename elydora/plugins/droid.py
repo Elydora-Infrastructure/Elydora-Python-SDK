@@ -2,183 +2,113 @@
 
 from __future__ import annotations
 
-import json
-import os
-from typing import List, Optional
+from typing import Dict, List
 
-from ._transaction import FileChange, file_change, require_runtime, write_changes
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .droid_config import (
-    additions_for,
-    installation_targets,
+    DroidSources,
+    RenderedDocument,
+    active_document,
+    additions_for_target,
+    effective_hooks,
+    hook_block,
+    installation_documents,
     render_document,
-    unique_documents,
+    source_documents,
 )
 from .droid_contract import (
     AGENT_KEY,
-    AUDIT_SCRIPT,
-    GUARD_SCRIPT,
-    TOOL_EVENTS,
+    JsonObject,
     build_group,
-    elydora_dir,
-    merge_hook_settings,
     runtime_contracts,
-    validate_javascript_regexes,
 )
-from .droid_io import (
-    display_config_path,
-    read_sources,
-    rendered_change,
-    runtime_files_exist,
+from .droid_installation import (
+    commit_droid_installation,
+    commit_droid_uninstall,
+    preflight_droid_installation,
+    prepare_droid_installation,
+    prepare_droid_uninstall,
 )
-from .hook_template import generate_hook_script
+from .droid_io import display_config_path, read_sources, runtime_files_exist
 
 
-def _agent_directory(agent_id: str) -> str:
-    if (
-        not agent_id
-        or agent_id in {".", ".."}
-        or os.path.basename(agent_id) != agent_id
-        or os.path.isabs(agent_id)
-    ):
-        raise ValueError("agent_id must be a single non-empty path segment")
-    return os.path.join(elydora_dir(), agent_id)
+def _render_installation(
+    sources: DroidSources,
+    guard_path: str,
+    audit_path: str,
+) -> List[RenderedDocument]:
+    target = active_document(sources)
+    groups: Dict[str, JsonObject] = {
+        "PreToolUse": build_group(guard_path),
+        "PostToolUse": build_group(audit_path),
+    }
+    return [
+        render_document(
+            document,
+            None,
+            additions_for_target(document, target, groups),
+        )
+        for document in installation_documents(sources)
+    ]
 
 
-def _same_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
-
-
-def _append_change(changes: List[FileChange], change: Optional[FileChange]) -> None:
-    if change is not None:
-        changes.append(change)
+def _render_uninstall(
+    sources: DroidSources,
+    agent_id: str,
+) -> List[RenderedDocument]:
+    return [
+        render_document(document, agent_id or None, {})
+        for document in source_documents(sources)
+    ]
 
 
 class DroidPlugin(AgentPlugin):
     """Install Elydora into Factory Droid's user-level hook sources."""
 
-    def install(self, config: InstallConfig) -> None:
-        agent_id = config.get("agent_id", "")
-        agent_directory = _agent_directory(agent_id)
+    manages_guard_runtime = True
+
+    def preflight_install(self, config: InstallConfig) -> None:
         sources = read_sources()
-        validate_javascript_regexes([
-            sources.primary.hooks if sources.primary is not None else {},
-            sources.settings.hooks,
-        ])
+        preflight_droid_installation(config, sources)
 
-        guard_path = config.get("guard_script_path", "")
-        expected_guard_path = os.path.join(agent_directory, GUARD_SCRIPT)
-        if not _same_path(guard_path, expected_guard_path):
-            raise ValueError(
-                "Elydora guard runtime must use the managed agent directory: "
-                f"{expected_guard_path}"
-            )
-        require_runtime(guard_path, "Elydora guard runtime")
-        audit_path = os.path.join(agent_directory, AUDIT_SCRIPT)
-
-        selected = installation_targets(sources)
-        groups = {
-            "PreToolUse": build_group(guard_path),
-            "PostToolUse": build_group(audit_path),
-        }
-        documents = unique_documents([
-            sources.primary,
-            sources.settings if sources.settings.has_hooks_container else None,
-            *(selected.targets[event] for event in TOOL_EVENTS),
-        ])
-        rendered = [
-            render_document(
-                document,
-                None,
-                additions_for(document, selected.targets, groups),
-            )
-            for document in documents
-        ]
-
-        runtime_config = {
-            "org_id": config.get("org_id", ""),
-            "agent_id": agent_id,
-            "kid": config.get("kid", ""),
-            "base_url": config.get("base_url", "https://api.elydora.com"),
-            "token": config.get("token", ""),
-            "agent_name": AGENT_KEY,
-        }
-        audit_script = generate_hook_script(
-            org_id=config.get("org_id", ""),
-            agent_id=agent_id,
-            kid=config.get("kid", ""),
-            base_url=config.get("base_url", "https://api.elydora.com"),
+    def install(self, config: InstallConfig) -> None:
+        sources = read_sources()
+        paths = preflight_droid_installation(config, sources)
+        rendered = _render_installation(
+            sources,
+            paths.guard_path,
+            paths.audit_path,
         )
-        changes: List[FileChange] = []
-        _append_change(changes, file_change(
-            os.path.join(agent_directory, "config.json"),
-            "Elydora runtime config",
-            json.dumps(runtime_config, indent=2) + "\n",
-            0o600,
-        ))
-        _append_change(changes, file_change(
-            os.path.join(agent_directory, "private.key"),
-            "Elydora private key",
-            config.get("private_key", ""),
-            0o600,
-        ))
-        _append_change(changes, file_change(
-            audit_path,
-            "Elydora audit runtime",
-            audit_script,
-            0o700,
-        ))
-        for item in rendered:
-            _append_change(changes, rendered_change(item))
-        write_changes(changes, "Write Factory Droid installation")
-
-        locations = ", ".join(
-            f"{event}: {selected.targets[event].file_path}"
-            for event in TOOL_EVENTS
-        )
-        print(f"Factory Droid: {locations}")
+        prepared = prepare_droid_installation(config, sources, rendered)
+        commit_droid_installation(prepared)
+        print(f"Factory Droid hooks: {active_document(sources).file_path}")
         print("Factory Droid: run /hooks to review the Elydora hook changes.")
 
     def uninstall(self, agent_id: str = "") -> None:
         sources = read_sources()
-        documents = unique_documents([
-            sources.primary,
-            sources.settings if sources.settings.has_hooks_container else None,
-        ])
-        changes: List[FileChange] = []
-        for document in documents:
-            rendered = render_document(document, agent_id or None, {})
-            _append_change(changes, rendered_change(rendered))
-        write_changes(changes, "Write Factory Droid hook sources")
+        rendered = _render_uninstall(sources, agent_id)
+        commit_droid_uninstall(prepare_droid_uninstall(rendered))
 
     def status(self) -> PluginStatus:
         sources = read_sources()
-        effective = merge_hook_settings(
-            sources.primary.hooks if sources.primary is not None else None,
-            sources.settings.hooks,
-        )
-        contracts = runtime_contracts(effective)
+        contracts = runtime_contracts(effective_hooks(sources))
+        blocked = hook_block(sources)
+        configured = blocked is None and bool(contracts)
+        installed = configured and runtime_files_exist(contracts)
         config_path = display_config_path(sources)
-        if effective.get("hooksDisabled") is True:
-            return PluginStatus(
-                installed=False,
-                agent=AGENT_KEY,
-                details=f"Configured hooks are disabled: {config_path}",
+        if blocked is not None:
+            details = (
+                f"Configured hooks are disabled by {blocked.field}: "
+                f"{blocked.file_path}"
             )
-        if not contracts:
-            return PluginStatus(
-                installed=False,
-                agent=AGENT_KEY,
-                details="Not installed",
+        elif not contracts:
+            details = "Not installed"
+        elif installed:
+            details = f"Config: {config_path}"
+        else:
+            details = (
+                f"Configured at {config_path}; managed contract incomplete"
             )
-        installed = runtime_files_exist(contracts)
-        details = (
-            f"Config: {config_path}"
-            if installed
-            else f"Configured at {config_path}; runtime scripts missing"
-        )
         return PluginStatus(
             installed=installed,
             agent=AGENT_KEY,
