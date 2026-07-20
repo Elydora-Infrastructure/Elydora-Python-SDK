@@ -15,7 +15,6 @@ from elydora._cli_secrets import (
 )
 from elydora.plugins._file_io import write_text_atomic
 from elydora.plugins import (
-    claudecode,
     copilot,
     cursor,
     gemini,
@@ -374,7 +373,6 @@ def test_atomic_secret_write_preserves_existing_file_on_replace_failure(
 @pytest.mark.parametrize(
     "module, plugin_type, agent_name",
     [
-        (claudecode, claudecode.ClaudeCodePlugin, "claudecode"),
         (copilot, copilot.CopilotPlugin, "copilot"),
         (cursor, cursor.CursorPlugin, "cursor"),
         (gemini, gemini.GeminiPlugin, "gemini"),

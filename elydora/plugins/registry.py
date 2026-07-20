@@ -13,8 +13,8 @@ SUPPORTED_AGENTS: Dict[str, Dict[str, str]] = {
     },
     "claudecode": {
         "name": "Claude Code",
-        "hook_event": "PostToolUse",
-        "config_path": "~/.claude/settings.json",
+        "hook_event": "PreToolUse/PostToolUse/PostToolUseFailure",
+        "config_path": "$CLAUDE_CONFIG_DIR/settings.json",
     },
     "codex": {
         "name": "OpenAI Codex",

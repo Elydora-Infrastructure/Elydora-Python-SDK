@@ -1,210 +1,105 @@
-"""Claude Code plugin — merges PostToolUse hook into ~/.claude/settings.json."""
+"""Claude Code native user-hook integration."""
 
 from __future__ import annotations
 
-import json
-import os
-import sys
-
-from ._file_io import write_json_atomic, write_text_atomic
 from .base import AgentPlugin, InstallConfig, PluginStatus
-from .hook_template import generate_hook_script
+from .claudecode_contract import (
+    AGENT_KEY,
+    AUDIT_STATUS,
+    GUARD_STATUS,
+    ClaudeHooks,
+    build_claude_group,
+    claude_runtime_contracts,
+    remove_managed_claude_hooks,
+    render_claude_document,
+)
+from .claudecode_installation import (
+    commit_claude_installation,
+    commit_claude_uninstall,
+    preflight_claude_installation,
+    prepare_claude_installation,
+    prepare_claude_uninstall,
+)
+from .claudecode_io import (
+    claude_runtime_files_exist,
+    read_claude_document,
+)
 
 
-SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
-ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
+def _require_enabled_hooks(disabled: bool, file_path: str) -> None:
+    if disabled:
+        raise ValueError(
+            f"Claude Code hooks are disabled by disableAllHooks: {file_path}"
+        )
+
+
+def _installed_hooks(
+    hooks: ClaudeHooks, guard_path: str, audit_path: str
+) -> ClaudeHooks:
+    cleaned = remove_managed_claude_hooks(hooks)
+    return {
+        **cleaned,
+        "PreToolUse": [
+            *cleaned.get("PreToolUse", []),
+            build_claude_group(guard_path, GUARD_STATUS),
+        ],
+        "PostToolUse": [
+            *cleaned.get("PostToolUse", []),
+            build_claude_group(audit_path, AUDIT_STATUS),
+        ],
+        "PostToolUseFailure": [
+            *cleaned.get("PostToolUseFailure", []),
+            build_claude_group(audit_path, AUDIT_STATUS),
+        ],
+    }
 
 
 class ClaudeCodePlugin(AgentPlugin):
-    """Install/uninstall Elydora audit hook for Claude Code."""
+    """Install Elydora into Claude Code's native global user settings."""
 
-    @staticmethod
-    def _hook_path_for(agent_id: str) -> str:
-        return os.path.join(ELYDORA_DIR, agent_id, "hook.py")
+    manages_guard_runtime = True
+
+    def preflight_install(self, config: InstallConfig) -> None:
+        document = read_claude_document()
+        _require_enabled_hooks(document.hooks_disabled, document.file_path)
+        preflight_claude_installation(config, document)
 
     def install(self, config: InstallConfig) -> None:
-        agent_id = config.get("agent_id", "")
-        agent_name = config.get("agent_name", "")
-
-        # Create per-agent directory
-        agent_dir = os.path.join(ELYDORA_DIR, agent_id)
-        os.makedirs(agent_dir, exist_ok=True)
-
-        # Write config.json
-        config_data = {
-            "org_id": config.get("org_id", ""),
-            "agent_id": agent_id,
-            "kid": config.get("kid", ""),
-            "base_url": config.get("base_url", "https://api.elydora.com"),
-            "token": config.get("token", ""),
-            "agent_name": agent_name,
-        }
-        config_path = os.path.join(agent_dir, "config.json")
-        write_json_atomic(
-            config_path,
-            config_data,
-            0o600,
-            "Elydora runtime config",
+        document = read_claude_document()
+        _require_enabled_hooks(document.hooks_disabled, document.file_path)
+        paths = preflight_claude_installation(config, document)
+        rendered = render_claude_document(
+            document,
+            _installed_hooks(document.hooks, paths.guard_path, paths.audit_path),
         )
-
-        # Write private key
-        private_key_path = os.path.join(agent_dir, "private.key")
-        write_text_atomic(
-            private_key_path,
-            config.get("private_key", ""),
-            0o600,
-            "Elydora private key",
+        changes = prepare_claude_installation(config, paths, rendered)
+        commit_claude_installation(changes)
+        print(
+            "Claude Code: global PreToolUse, PostToolUse, "
+            "and PostToolUseFailure hooks installed."
         )
-
-        # Write the hook script
-        script = generate_hook_script(
-            org_id=config.get("org_id", ""),
-            agent_id=agent_id,
-            kid=config.get("kid", ""),
-            base_url=config.get("base_url", "https://api.elydora.com"),
-        )
-        hook_path = self._hook_path_for(agent_id)
-        write_text_atomic(
-            hook_path,
-            script,
-            0o700,
-            "Elydora audit runtime",
-        )
-
-        guard_script_path = config.get("guard_script_path", "")
-        python_exe = sys.executable
-
-        # Merge into Claude Code settings
-        settings = _load_json(SETTINGS_PATH)
-        hooks = settings.setdefault("hooks", {})
-
-        # --- PreToolUse (guard — freeze enforcement) ---
-        pre_tool_use = hooks.setdefault("PreToolUse", [])
-        pre_tool_use[:] = [h for h in pre_tool_use if not _is_elydora_hook(h)]
-        if guard_script_path:
-            pre_tool_use.append({
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": f'"{python_exe}" {guard_script_path}',
-                    }
-                ],
-            })
-
-        # --- PostToolUse (audit logging) ---
-        post_tool_use = hooks.setdefault("PostToolUse", [])
-
-        # Remove any existing Elydora hook entry
-        post_tool_use[:] = [h for h in post_tool_use if not _is_elydora_hook(h)]
-
-        post_tool_use.append({
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": hook_path,
-                }
-            ],
-        })
-
-        _save_json(SETTINGS_PATH, settings)
-        print("Elydora hook installed for Claude Code.")
-        print(f"  Hook script: {hook_path}")
-        print(f"  Settings: {SETTINGS_PATH}")
+        print("  Claude Code verification: run /hooks and claude doctor.")
 
     def uninstall(self, agent_id: str = "") -> None:
-        # Remove hook entries from settings
-        if os.path.exists(SETTINGS_PATH):
-            settings = _load_json(SETTINGS_PATH)
-            hooks = settings.get("hooks", {})
-            changed = False
-
-            # Remove PreToolUse entries
-            pre_tool_use = hooks.get("PreToolUse", [])
-            pre_filtered = [h for h in pre_tool_use if not _is_elydora_hook(h, agent_id)]
-            if len(pre_filtered) != len(pre_tool_use):
-                hooks["PreToolUse"] = pre_filtered
-                if not pre_filtered:
-                    del hooks["PreToolUse"]
-                changed = True
-
-            # Remove PostToolUse entries
-            post_tool_use = hooks.get("PostToolUse", [])
-            post_filtered = [h for h in post_tool_use if not _is_elydora_hook(h, agent_id)]
-            if len(post_filtered) != len(post_tool_use):
-                hooks["PostToolUse"] = post_filtered
-                if not post_filtered:
-                    del hooks["PostToolUse"]
-                changed = True
-
-            if changed:
-                if not hooks:
-                    del settings["hooks"]
-                _save_json(SETTINGS_PATH, settings)
-
-        # Hook script removal is handled by cli.py cmd_uninstall (rmtree of agent dir)
-        print("Elydora hook uninstalled from Claude Code.")
+        document = read_claude_document()
+        rendered = render_claude_document(
+            document,
+            remove_managed_claude_hooks(document.hooks, agent_id),
+        )
+        commit_claude_uninstall(prepare_claude_uninstall(rendered))
 
     def status(self) -> PluginStatus:
-        # Scan ~/.elydora/*/hook.py for any installed hook
-        import glob as _glob
-        hook_pattern = os.path.join(ELYDORA_DIR, "*", "hook.py")
-        hook_files = _glob.glob(hook_pattern)
-        hook_exists = len(hook_files) > 0
-
-        settings_configured = False
-        if os.path.exists(SETTINGS_PATH):
-            settings = _load_json(SETTINGS_PATH)
-            hooks = settings.get("hooks", {})
-            pre_tool_use = hooks.get("PreToolUse", [])
-            post_tool_use = hooks.get("PostToolUse", [])
-            pre_configured = any(_is_elydora_hook(h) for h in pre_tool_use)
-            post_configured = any(_is_elydora_hook(h) for h in post_tool_use)
-            settings_configured = pre_configured and post_configured
-
-        installed = hook_exists and settings_configured
-        if installed:
-            details = f"Found {len(hook_files)} agent(s): {', '.join(hook_files)}"
-        elif hook_exists:
-            details = "Hook script exists but not configured in settings"
-        elif settings_configured:
-            details = "Configured in settings but hook script missing"
-        else:
-            details = "Not installed"
-
-        return PluginStatus(installed=installed, agent="claudecode", details=details)
-
-
-def _is_elydora_hook(entry: dict, agent_id: str = "") -> bool:
-    # Collect all command strings from the entry
-    commands: list[str] = []
-    inner_hooks = entry.get("hooks")
-    if isinstance(inner_hooks, list):
-        for hook in inner_hooks:
-            if isinstance(hook, dict) and isinstance(hook.get("command"), str):
-                commands.append(hook["command"])
-    else:
-        command = entry.get("command")
-        if isinstance(command, str):
-            commands.append(command)
-
-    for cmd in commands:
-        cmd_lower = cmd.lower()
-        if "elydora" not in cmd_lower:
-            continue
-        # If agent_id is specified, only match hooks for that specific agent
-        if agent_id and agent_id in cmd:
-            return True
-        if not agent_id:
-            return True
-    return False
-
-
-def _load_json(path: str) -> dict:
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _save_json(path: str, data: dict) -> None:
-    write_json_atomic(path, data, 0o600, "Claude Code settings")
+        document = read_claude_document()
+        contracts = claude_runtime_contracts(document.hooks)
+        configured = not document.hooks_disabled and bool(contracts)
+        installed = configured and claude_runtime_files_exist(contracts)
+        details = (
+            f"Config: {document.file_path}"
+            if installed
+            else f"Configured at {document.file_path}; managed contract incomplete"
+        )
+        return PluginStatus(
+            installed=installed,
+            agent=AGENT_KEY,
+            details=details if configured else "Not installed",
+        )
