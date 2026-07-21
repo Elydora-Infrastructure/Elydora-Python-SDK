@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import sys
 from typing import Dict, NamedTuple, NoReturn, Optional, Type
 
@@ -42,6 +41,11 @@ from .plugins.letta import LettaPlugin
 from .plugins.opencode import OpenCodePlugin
 from .plugins.qwen import QwenPlugin
 from .plugins._file_io import write_text_atomic
+from .plugins._runtime_removal import (
+    commit_runtime_removal,
+    prepare_runtime_removal,
+)
+from .plugins._transaction import recover_pending_transactions
 
 
 PLUGIN_MAP: Dict[str, Type[AgentPlugin]] = {
@@ -180,6 +184,7 @@ def _get_plugin(agent_name: str) -> AgentPlugin:
 
 def cmd_install(args: argparse.Namespace) -> None:
     """Handle the 'install' subcommand."""
+    recover_pending_transactions()
     agent_name: str = args.agent
     agent_dir = _resolve_agent_directory_or_exit(args.agent_id)
     plugin = _get_plugin(agent_name)
@@ -215,9 +220,10 @@ def cmd_install(args: argparse.Namespace) -> None:
         config["token"] = secrets.token
     plugin.preflight_install(config)
 
-    # Create per-agent directory under ~/.elydora/{agent_id}/
-    ensure_private_directory(runtime_root())
-    ensure_private_directory(agent_dir)
+    # Transactional adapters create and recover their own runtime directories.
+    if not getattr(plugin, "manages_runtime_directories", False):
+        ensure_private_directory(runtime_root())
+        ensure_private_directory(agent_dir)
 
     # Generate and write the guard script for adapters that use the shared runtime.
     if not plugin.manages_guard_runtime:
@@ -235,6 +241,7 @@ def cmd_install(args: argparse.Namespace) -> None:
 
 def cmd_uninstall(args: argparse.Namespace) -> None:
     """Handle the 'uninstall' subcommand."""
+    recover_pending_transactions()
     explicit_agent_id = getattr(args, "agent_id", None)
     elydora_dir = runtime_root()
     agent_id = explicit_agent_id
@@ -273,15 +280,24 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         agent_directory_exists = True
 
     plugin = _get_plugin(args.agent)
+    manages_runtime_removal = getattr(
+        plugin, "manages_runtime_removal", False
+    )
+    runtime_removal = (
+        None
+        if not agent_directory_exists or manages_runtime_removal
+        else prepare_runtime_removal(agent_id, args.agent)
+    )
     plugin.uninstall(agent_id=agent_id)
 
-    if agent_directory_exists:
-        shutil.rmtree(agent_dir)
+    if runtime_removal is not None:
+        commit_runtime_removal(runtime_removal)
         print(f"  Removed agent directory: {agent_dir}")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
     """Handle the 'status' subcommand."""
+    recover_pending_transactions()
     print("Elydora Agent Hook Status")
     print("=" * 40)
     for name in get_agent_names():

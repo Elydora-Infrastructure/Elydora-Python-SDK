@@ -53,17 +53,21 @@ def test_transaction_rolls_back_all_seven_files(
 ) -> None:
     original = '{"telemetryEnabled":true}\n'
     fixture = prepare_fixture(monkeypatch, tmp_path, existing_settings=original)
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     failed = False
 
-    def fail_settings_once(source: str, destination: str) -> None:
+    def fail_settings_once(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if os.path.abspath(destination) == str(fixture.config_path) and not failed:
             failed = True
             raise OSError("injected Auggie settings failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_settings_once)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_settings_once)
     with pytest.raises(OSError, match="injected Auggie settings failure"):
         fixture.install()
 

@@ -63,17 +63,21 @@ def test_install_rolls_back_runtime_after_late_hook_commit_failure(
 ) -> None:
     fixture = DroidFixture(monkeypatch, tmp_path)
     prepared = _prepare_installation(fixture)
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     failed = False
 
-    def fail_hook_commit(source: Any, destination: Any) -> None:
+    def fail_hook_commit(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if not failed and Path(destination) == fixture.root_path:
             failed = True
             raise OSError("injected Droid hook commit failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_hook_commit)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_hook_commit)
     with pytest.raises(OSError, match="injected Droid hook commit failure"):
         commit_droid_installation(prepared)
     assert failed is True
@@ -200,17 +204,21 @@ def test_uninstall_rolls_back_all_hook_documents(
         for document in source_documents(sources)
     ]
     prepared = prepare_droid_uninstall(rendered)
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     failed = False
 
-    def fail_second_source(source: Any, destination: Any) -> None:
+    def fail_second_source(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if not failed and Path(destination) == fixture.settings_path:
             failed = True
             raise OSError("injected Droid uninstall failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_second_source)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_second_source)
     with pytest.raises(OSError, match="injected Droid uninstall failure"):
         commit_droid_uninstall(prepared)
     assert failed is True

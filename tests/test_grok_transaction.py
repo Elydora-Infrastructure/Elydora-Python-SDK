@@ -73,17 +73,21 @@ def test_install_restores_config_and_four_runtimes_when_final_commit_fails(
     fixture = prepare_fixture(
         monkeypatch, tmp_path, existing_config=original
     )
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     failed = False
 
-    def fail_config_once(source: str, destination: str) -> None:
+    def fail_config_once(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if os.path.abspath(destination) == str(fixture.config_path) and not failed:
             failed = True
             raise OSError("injected Grok config failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_config_once)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_config_once)
 
     with pytest.raises(OSError, match="injected Grok config failure"):
         fixture.install()
@@ -132,10 +136,14 @@ def test_uninstall_preserves_config_when_commit_fails(
     )
     changes = grok_installation.prepare_grok_uninstall(rendered)
 
-    def fail_replace(_source: str, _destination: str) -> None:
+    def fail_replace(
+        _source: str,
+        _destination: str,
+        _directory: _transaction.PinnedDirectory,
+    ) -> None:
         raise OSError("injected Grok uninstall failure")
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_replace)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_replace)
 
     with pytest.raises(OSError, match="injected Grok uninstall failure"):
         grok_installation.commit_grok_uninstall(changes)
@@ -152,20 +160,24 @@ def test_recovery_preserves_original_after_committed_file_changes(
     original = fixture.runtime_config_path.read_text(encoding="utf-8")
     fixture.config["org_id"] = "org-updated"
     changes = prepare_installation(fixture)
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     calls = 0
 
-    def change_first_then_fail(source: str, destination: str) -> None:
+    def change_first_then_fail(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            real_replace(source, destination)
+            real_replace(source, destination, directory)
             write_text(Path(destination), "external change\n")
             return
         raise OSError("injected later commit failure")
 
     monkeypatch.setattr(
-        _transaction.os, "replace", change_first_then_fail
+        _transaction, "_replace_physical", change_first_then_fail
     )
 
     with pytest.raises(OSError, match="original content preserved at"):
@@ -189,21 +201,29 @@ def test_recovery_preserves_original_after_restore_failure(
         bytes(range(31, -1, -1))
     )
     changes = prepare_installation(fixture)
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     commits = 0
 
-    def fail_commit_and_restore(source: str, destination: str) -> None:
+    def fail_later_commit(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal commits
-        if source.endswith(".rollback"):
-            raise OSError("injected rollback failure")
         commits += 1
         if commits == 2:
             raise OSError("injected later commit failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(
-        _transaction.os, "replace", fail_commit_and_restore
-    )
+    def fail_restore(
+        _source: str,
+        _destination: str,
+        _directory: _transaction.PinnedDirectory,
+    ) -> None:
+        raise OSError("injected rollback failure")
+
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_later_commit)
+    monkeypatch.setattr(_transaction, "_restore_physical", fail_restore)
 
     with pytest.raises(OSError, match="original content preserved at"):
         grok_installation.commit_grok_installation(changes)

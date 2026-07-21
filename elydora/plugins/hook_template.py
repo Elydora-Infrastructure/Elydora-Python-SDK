@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from .error_log_template import ERROR_LOG_RUNTIME
 from .guard_template import generate_guard_script
 from .runtime_reader_template import PROTECTED_RUNTIME_READER
 
@@ -52,6 +53,8 @@ ERROR_LOG_PATH = os.path.join(ELYDORA_DIR, AGENT_ID, "error.log")
 ZERO_CHAIN_HASH = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 {PROTECTED_RUNTIME_READER}
+
+{ERROR_LOG_RUNTIME}
 
 
 def base64url_encode(data):
@@ -137,9 +140,12 @@ def generate_uuidv7():
 
 def log_error(error):
     try:
-        message = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        message += " [elydora-hook] " + repr(error) + "\\n"
-        append_protected_text(ERROR_LOG_PATH, "Error log", message)
+        append_bounded_error_log(
+            ERROR_LOG_PATH,
+            "Error log",
+            bounded_error_message(error),
+            MAX_PROTECTED_LOG_BYTES,
+        )
     except Exception as log_failure:
         sys.stderr.write(
             "[Elydora audit] Failed to write error log: "

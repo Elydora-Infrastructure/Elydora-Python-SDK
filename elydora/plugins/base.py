@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, Dict
-
 if sys.version_info >= (3, 11):
     from typing import TypedDict
 else:
@@ -33,6 +31,8 @@ class AgentPlugin(ABC):
     """Base class for all agent plugins."""
 
     manages_guard_runtime = False
+    manages_runtime_directories = False
+    manages_runtime_removal = False
 
     def preflight_install(self, config: InstallConfig) -> None:
         """Validate provider sources before the CLI creates runtime files."""

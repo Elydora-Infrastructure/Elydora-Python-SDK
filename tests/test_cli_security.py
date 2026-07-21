@@ -17,7 +17,6 @@ from elydora.plugins._file_io import write_text_atomic
 from elydora.plugins import (
     copilot,
     cursor,
-    kiroide,
     opencode,
 )
 from elydora.plugins.hook_template import generate_hook_script
@@ -373,7 +372,6 @@ def test_atomic_secret_write_preserves_existing_file_on_replace_failure(
     [
         (copilot, copilot.CopilotPlugin, "copilot"),
         (cursor, cursor.CursorPlugin, "cursor"),
-        (kiroide, kiroide.KiroIdePlugin, "kiroide"),
         (opencode, opencode.OpenCodePlugin, "opencode"),
     ],
 )
@@ -402,8 +400,6 @@ def test_legacy_plugins_persist_one_owner_only_private_key(
             "SETTINGS_PATH",
             str(case_root / "provider" / "settings.json"),
         )
-    elif module is kiroide:
-        monkeypatch.setattr(module, "KIRO_HOOK_DIR", str(case_root / "kiro-hooks"))
     elif module is opencode:
         monkeypatch.setattr(module, "PLUGIN_DIR", str(case_root / "plugins"))
     elif module is copilot:

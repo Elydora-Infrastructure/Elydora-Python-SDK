@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from typing import Any
-
 import pytest
 
 from elydora import cli
@@ -315,17 +312,21 @@ def test_transaction_rolls_back_every_runtime_and_settings_change(
         monkeypatch, tmp_path, existing_settings={"owner": "user"}
     )
     original = fixture.source()
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     failed = False
 
-    def fail_settings_commit(source: Any, destination: Any) -> None:
+    def fail_settings_commit(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if not failed and Path(destination) == fixture.config_path:
             failed = True
             raise OSError("simulated settings commit failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_settings_commit)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_settings_commit)
     with pytest.raises(OSError, match="Install Qwen Code hooks"):
         fixture.install()
     assert failed

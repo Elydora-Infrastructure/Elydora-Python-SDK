@@ -37,17 +37,21 @@ def test_transaction_rolls_back_all_six_files(
     tmp_path: Path,
 ) -> None:
     fixture = prepare_fixture(monkeypatch, tmp_path)
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     failed = False
 
-    def fail_audit_once(source: str, destination: str) -> None:
+    def fail_audit_once(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if os.path.abspath(destination) == str(fixture.audit_wrapper) and not failed:
             failed = True
             raise OSError("injected Cline audit hook failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_audit_once)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_audit_once)
     with pytest.raises(OSError, match="injected Cline audit hook failure"):
         fixture.install()
 
@@ -64,17 +68,21 @@ def test_concurrent_hook_replacement_is_detected_before_final_commit(
     fixture = prepare_fixture(monkeypatch, tmp_path)
     changes = prepare_installation(fixture)
     concurrent = "// concurrently replaced\n"
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     injected = False
 
-    def inject_replacement(source: str, destination: str) -> None:
+    def inject_replacement(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal injected
         if not injected:
             injected = True
             write_text(fixture.audit_wrapper, concurrent, 0o700)
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", inject_replacement)
+    monkeypatch.setattr(_transaction, "_replace_physical", inject_replacement)
     with pytest.raises(OSError, match="changed during installation"):
         cline_installation.commit_cline_installation(changes)
 
@@ -229,17 +237,21 @@ def test_uninstall_restores_both_hooks_when_second_removal_fails(
         ),
         AGENT_ID,
     )
-    real_replace = _transaction.os.replace
+    real_capture = _transaction._capture_physical
     failed = False
 
-    def fail_audit_removal(source: str, destination: str) -> None:
+    def fail_audit_removal(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if os.path.abspath(source) == str(fixture.audit_wrapper) and not failed:
             failed = True
             raise OSError("injected Cline uninstall failure")
-        real_replace(source, destination)
+        real_capture(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_audit_removal)
+    monkeypatch.setattr(_transaction, "_capture_physical", fail_audit_removal)
     with pytest.raises(OSError, match="injected Cline uninstall failure"):
         cline_installation.commit_cline_uninstall(changes)
 

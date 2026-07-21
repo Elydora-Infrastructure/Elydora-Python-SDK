@@ -43,17 +43,21 @@ def test_install_restores_both_configs_when_final_commit_fails(
         stable_config=stable,
         legacy_config=legacy,
     )
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     failed = False
 
-    def fail_legacy_once(source: str, destination: str) -> None:
+    def fail_legacy_once(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if os.path.abspath(destination) == str(fixture.legacy_path) and not failed:
             failed = True
             raise OSError("injected legacy config failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_legacy_once)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_legacy_once)
 
     with pytest.raises(OSError, match="injected legacy config failure"):
         fixture.install()
@@ -107,18 +111,22 @@ def test_uninstall_restores_first_config_when_second_removal_fails(
         fixture.legacy_path,
     ]
     before = snapshot_files(paths)
-    real_replace = _transaction.os.replace
+    real_capture = _transaction._capture_physical
     removal_commits = 0
 
-    def fail_second_removal(source: str, destination: str) -> None:
+    def fail_second_removal(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal removal_commits
         if destination.endswith(".rollback"):
             removal_commits += 1
             if removal_commits == 2:
                 raise OSError("injected uninstall failure")
-        real_replace(source, destination)
+        real_capture(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_second_removal)
+    monkeypatch.setattr(_transaction, "_capture_physical", fail_second_removal)
 
     with pytest.raises(OSError, match="injected uninstall failure"):
         fixture.plugin.uninstall(AGENT_ID)

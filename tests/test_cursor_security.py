@@ -13,6 +13,7 @@ from cursor_support import (
     write_json,
     write_text,
 )
+from elydora.plugins import _transaction
 
 
 @pytest.mark.parametrize(
@@ -194,17 +195,21 @@ def test_transaction_rolls_back_all_files_when_config_commit_fails(
         existing_config={"version": 1, "hooks": {"sessionStart": []}},
     )
     original = fixture.config_path.read_text(encoding="utf-8")
-    real_replace = os.replace
+    real_replace = _transaction._replace_physical
     failed = False
 
-    def fail_config_once(source: str, destination: str) -> None:
+    def fail_config_once(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if os.path.abspath(destination) == str(fixture.config_path) and not failed:
             failed = True
             raise OSError("injected config commit failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(os, "replace", fail_config_once)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_config_once)
 
     with pytest.raises(OSError, match="injected config commit failure"):
         fixture.install()

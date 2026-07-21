@@ -69,17 +69,21 @@ def test_transaction_rolls_back_all_five_files(
     fixture = prepare_fixture(
         monkeypatch, tmp_path, existing_settings=original
     )
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     failed = False
 
-    def fail_settings_once(source: str, destination: str) -> None:
+    def fail_settings_once(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal failed
         if os.path.abspath(destination) == str(fixture.config_path) and not failed:
             failed = True
             raise OSError("injected Claude settings failure")
-        real_replace(source, destination)
+        real_replace(source, destination, directory)
 
-    monkeypatch.setattr(_transaction.os, "replace", fail_settings_once)
+    monkeypatch.setattr(_transaction, "_replace_physical", fail_settings_once)
 
     with pytest.raises(OSError, match="injected Claude settings failure"):
         fixture.install()
@@ -118,19 +122,23 @@ def test_recovery_preserves_original_after_committed_runtime_changes(
     fixture.config["org_id"] = "org-updated"
     fixture.config["private_key"] = base64url_encode(bytes(range(31, -1, -1)))
     changes = prepare_installation(fixture)
-    real_replace = _transaction.os.replace
+    real_replace = _transaction._replace_physical
     calls = 0
 
-    def change_first_then_fail(source: str, destination: str) -> None:
+    def change_first_then_fail(
+        source: str,
+        destination: str,
+        directory: _transaction.PinnedDirectory,
+    ) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            real_replace(source, destination)
+            real_replace(source, destination, directory)
             write_text(Path(destination), "external change\n")
             return
         raise OSError("injected later commit failure")
 
-    monkeypatch.setattr(_transaction.os, "replace", change_first_then_fail)
+    monkeypatch.setattr(_transaction, "_replace_physical", change_first_then_fail)
 
     with pytest.raises(OSError, match="original content preserved at"):
         claudecode_installation.commit_claude_installation(changes)

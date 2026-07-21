@@ -1,150 +1,133 @@
-"""Kiro IDE plugin — writes .kiro/hooks/elydora-audit.kiro.hook file."""
+"""Kiro IDE 1.0 workspace hook integration."""
 
 from __future__ import annotations
 
-import json
-import os
-import sys
-
-from ._file_io import write_json_atomic, write_text_atomic
 from .base import AgentPlugin, InstallConfig, PluginStatus
-from .hook_template import generate_hook_script
-
-
-KIRO_HOOK_DIR = os.path.join(os.path.expanduser("~"), ".kiro", "hooks")
-KIRO_HOOK_FILENAME = "elydora-audit.kiro.hook"
-ELYDORA_DIR = os.path.join(os.path.expanduser("~"), ".elydora")
+from .kiroide_contract import (
+    AGENT_KEY,
+    AUDIT_NAME,
+    GUARD_NAME,
+    build_kiroide_hook,
+    kiroide_runtime_contracts,
+    managed_kiroide_hooks_present,
+    render_kiroide_document,
+    require_available_kiroide_hooks,
+    without_managed_kiroide_hooks,
+)
+from .kiroide_installation import (
+    commit_kiroide_installation,
+    commit_kiroide_uninstall,
+    preflight_kiroide_installation,
+    prepare_kiroide_installation,
+    prepare_kiroide_uninstall,
+)
+from .kiroide_command import same_kiroide_agent_id
+from .kiroide_io import (
+    kiroide_runtime_files_exist,
+    legacy_kiroide_contract_matches_agent,
+    read_kiroide_sources,
+    require_kiroide_workspace_owner,
+)
 
 
 class KiroIdePlugin(AgentPlugin):
-    """Install/uninstall Elydora audit hook for Kiro IDE."""
+    """Install Elydora into the active Kiro IDE workspace."""
 
-    def _kiro_hook_path(self) -> str:
-        return os.path.join(KIRO_HOOK_DIR, KIRO_HOOK_FILENAME)
+    manages_guard_runtime = True
+    manages_runtime_directories = True
+    manages_runtime_removal = True
 
-    @staticmethod
-    def _hook_path_for(agent_id: str) -> str:
-        return os.path.join(ELYDORA_DIR, agent_id, "hook.py")
+    def preflight_install(self, config: InstallConfig) -> None:
+        sources = read_kiroide_sources()
+        require_available_kiroide_hooks(sources.document.hooks)
+        preflight_kiroide_installation(config, sources)
 
     def install(self, config: InstallConfig) -> None:
-        agent_id = config.get("agent_id", "")
-        agent_name = config.get("agent_name", "")
-
-        # Create per-agent directory
-        agent_dir = os.path.join(ELYDORA_DIR, agent_id)
-        os.makedirs(agent_dir, exist_ok=True)
-
-        # Write config.json
-        config_data = {
-            "org_id": config.get("org_id", ""),
-            "agent_id": agent_id,
-            "kid": config.get("kid", ""),
-            "base_url": config.get("base_url", "https://api.elydora.com"),
-            "token": config.get("token", ""),
-            "agent_name": agent_name,
-        }
-        config_path = os.path.join(agent_dir, "config.json")
-        write_json_atomic(
-            config_path,
-            config_data,
-            0o600,
-            "Elydora runtime config",
+        sources = read_kiroide_sources()
+        require_available_kiroide_hooks(sources.document.hooks)
+        paths = preflight_kiroide_installation(config, sources)
+        hooks = without_managed_kiroide_hooks(sources.document.hooks)
+        rendered = render_kiroide_document(
+            sources.document,
+            [
+                *hooks,
+                build_kiroide_hook(GUARD_NAME, paths.guard_path),
+                build_kiroide_hook(AUDIT_NAME, paths.audit_path),
+            ],
         )
-
-        # Write private key
-        private_key_path = os.path.join(agent_dir, "private.key")
-        write_text_atomic(
-            private_key_path,
-            config.get("private_key", ""),
-            0o600,
-            "Elydora private key",
+        prepared = prepare_kiroide_installation(
+            config, paths, sources, rendered
         )
-
-        # Write the Python hook script
-        script = generate_hook_script(
-            org_id=config.get("org_id", ""),
-            agent_id=agent_id,
-            kid=config.get("kid", ""),
-            base_url=config.get("base_url", "https://api.elydora.com"),
+        commit_kiroide_installation(prepared, sources, paths)
+        print(f"  Kiro IDE workspace hooks: {sources.paths.config_path}")
+        print(
+            "  Kiro IDE verification: confirm Elydora hooks in the "
+            "Agent Hooks panel."
         )
-        script_path = self._hook_path_for(agent_id)
-        write_text_atomic(
-            script_path,
-            script,
-            0o700,
-            "Elydora audit runtime",
-        )
-
-        guard_script_path = config.get("guard_script_path", "")
-        python_exe = sys.executable
-
-        # Write the Kiro hook definition file (JSON format matching Node SDK)
-        hook_config = {
-            "name": "Elydora Audit",
-            "description": "Sends tool-use events to the Elydora tamper-evident audit platform",
-            "version": "1.0.0",
-            "hooks": {
-                "pre_tool_use": {
-                    "command": f'"{python_exe}" {guard_script_path}' if guard_script_path else "",
-                    "timeout_ms": 5000,
-                },
-                "post_tool_use": {
-                    "command": script_path,
-                    "timeout_ms": 5000,
-                },
-            },
-        }
-
-        hook_path = self._kiro_hook_path()
-        write_json_atomic(
-            hook_path,
-            hook_config,
-            0o600,
-            "Kiro IDE hook definition",
-        )
-
-        print("Elydora hook installed for Kiro IDE.")
-        print(f"  Hook script: {script_path}")
-        print(f"  Hook definition: {hook_path}")
 
     def uninstall(self, agent_id: str = "") -> None:
-        hook_path = self._kiro_hook_path()
-        if os.path.exists(hook_path):
-            os.remove(hook_path)
-
-        # Hook script removal is handled by cli.py cmd_uninstall (rmtree of agent dir)
-        print("Elydora hook uninstalled from Kiro IDE.")
+        sources = read_kiroide_sources()
+        contracts = kiroide_runtime_contracts(sources.document.hooks)
+        if agent_id:
+            discovered_agent_ids = [agent_id]
+        else:
+            discovered_agent_ids = [contract.agent_id for contract in contracts]
+            legacy_contract = sources.legacy.contract
+            if legacy_contract is not None:
+                discovered_agent_ids.append(legacy_contract.agent_id)
+        agent_ids: list[str] = []
+        for discovered_agent_id in discovered_agent_ids:
+            if not any(
+                same_kiroide_agent_id(discovered_agent_id, existing_agent_id)
+                for existing_agent_id in agent_ids
+            ):
+                agent_ids.append(discovered_agent_id)
+        for managed_agent_id in agent_ids:
+            owns_workspace_runtime = any(
+                same_kiroide_agent_id(contract.agent_id, managed_agent_id)
+                for contract in contracts
+            )
+            require_kiroide_workspace_owner(
+                managed_agent_id,
+                sources.paths.workspace_root,
+                allow_missing_workspace_root=owns_workspace_runtime,
+                allow_legacy_ownerless_config=(
+                    legacy_kiroide_contract_matches_agent(
+                        sources.legacy, managed_agent_id
+                    )
+                ),
+            )
+        rendered = render_kiroide_document(
+            sources.document,
+            without_managed_kiroide_hooks(sources.document.hooks, agent_id),
+        )
+        prepared = prepare_kiroide_uninstall(
+            sources, rendered, agent_id, agent_ids
+        )
+        commit_kiroide_uninstall(prepared, sources)
+        print("Elydora hooks uninstalled from Kiro IDE.")
 
     def status(self) -> PluginStatus:
-        hook_path = self._kiro_hook_path()
-        hook_exists = os.path.exists(hook_path)
-
-        # Scan ~/.elydora/*/hook.py for any installed hook script
-        import glob as _glob
-        hook_pattern = os.path.join(ELYDORA_DIR, "*", "hook.py")
-        hook_files = _glob.glob(hook_pattern)
-        script_exists = len(hook_files) > 0
-
-        hook_configured = False
-        if hook_exists:
-            try:
-                with open(hook_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                hooks = cfg.get("hooks", {})
-                hook_configured = bool(
-                    hooks.get("pre_tool_use") and hooks.get("post_tool_use")
-                )
-            except Exception:
-                hook_configured = hook_exists  # Fallback
-
-        installed = hook_exists and script_exists and hook_configured
+        sources = read_kiroide_sources()
+        require_available_kiroide_hooks(sources.document.hooks)
+        contracts = kiroide_runtime_contracts(sources.document.hooks)
+        configured = bool(contracts)
+        managed_present = managed_kiroide_hooks_present(sources.document.hooks)
+        installed = configured and kiroide_runtime_files_exist(
+            contracts, sources.paths.workspace_root
+        )
         if installed:
-            details = f"Found {len(hook_files)} agent(s): {', '.join(hook_files)}"
-        elif hook_exists:
-            details = "Hook definition exists but script missing"
-        elif script_exists:
-            details = "Script exists but hook definition missing"
+            details = f"Config: {sources.paths.config_path}"
+        elif configured:
+            details = (
+                f"Configured at {sources.paths.config_path}; "
+                "runtime files are missing or invalid"
+            )
+        elif managed_present:
+            details = (
+                f"Managed hooks are incomplete or invalid: "
+                f"{sources.paths.config_path}"
+            )
         else:
             details = "Not installed"
-
-        return PluginStatus(installed=installed, agent="kiroide", details=details)
+        return PluginStatus(installed=installed, agent=AGENT_KEY, details=details)
