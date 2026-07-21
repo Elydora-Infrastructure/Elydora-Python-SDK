@@ -225,10 +225,16 @@ def test_guard_blocks_and_audit_preserves_native_payload(
         guard = managed_handler(hooks, "PreToolUse", "guard.py")
         audit = managed_handler(hooks, "PostToolUse", "hook.py")
         assert guard is not None and audit is not None
-        write_json(fixture.agent_dir / "status-cache.json", {
-            "status": "frozen",
-            "cached_at": time.time(),
-        })
+        status_cache_path = fixture.agent_dir / "status-cache.json"
+        write_json(
+            status_cache_path,
+            {
+                "status": "frozen",
+                "cached_at": time.time(),
+            },
+        )
+        if os.name != "nt":
+            status_cache_path.chmod(0o600)
         pre_payload = {
             "session_id": "session-1",
             "transcript_path": str(fixture.home_dir / "transcript.jsonl"),

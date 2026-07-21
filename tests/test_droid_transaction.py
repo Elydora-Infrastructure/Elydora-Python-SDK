@@ -229,6 +229,8 @@ def test_cli_preflight_blocks_disabled_hooks_before_runtime_creation(
         VALID_PRIVATE_KEY,
         encoding="utf-8",
     )
+    if os.name != "nt":
+        key_path.chmod(0o600)
     environment = {
         **os.environ,
         "HOME": str(home_dir),
