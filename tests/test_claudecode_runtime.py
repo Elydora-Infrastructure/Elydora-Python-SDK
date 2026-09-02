@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,6 +17,7 @@ from claudecode_support import (
     run_handler,
     server_base_url,
     start_api_server,
+    write_json,
 )
 
 
@@ -154,6 +156,7 @@ class _MismatchApi(BaseHTTPRequestHandler):
     submissions: list[dict[str, Any]] = []
     rejections = 1
     delay = 0.0
+    state_path: Path | None = None
     expected = "Rxlf4j36C3KvIQ3hWuOkX698BR5iDypUFuB70JjEuvM"
 
     @classmethod
@@ -161,6 +164,7 @@ class _MismatchApi(BaseHTTPRequestHandler):
         cls.submissions = []
         cls.rejections = rejections
         cls.delay = delay
+        cls.state_path = None
 
     def _respond(self, status: int, value: object) -> None:
         body = json.dumps(value).encode()
@@ -180,6 +184,8 @@ class _MismatchApi(BaseHTTPRequestHandler):
         count = len(cls.submissions)
         if cls.delay:
             time.sleep(cls.delay)
+        if cls.state_path is not None:
+            write_json(cls.state_path, {"prev_chain_hash": "B" * 43})
         if count > cls.rejections:
             self._respond(202, {"receipt": {"seq_no": count}})
             return
@@ -261,5 +267,73 @@ def test_audit_stops_retrying_when_the_submit_budget_is_spent(
         assert 2 <= len(_MismatchApi.submissions) <= 3
         log = (fixture.agent_dir / "error.log").read_text(encoding="utf-8").lower()
         assert "timed out" in log or "retry budget exhausted" in log
+    finally:
+        server.shutdown()
+
+
+def test_audit_does_not_regress_a_chain_head_advanced_by_a_concurrent_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    server = _mismatch_server(0)
+    fixture = prepare_fixture(monkeypatch, tmp_path, base_url=server_base_url(server))
+    try:
+        fixture.install()
+        _MismatchApi.state_path = fixture.agent_dir / "chain-state.json"
+        audit = managed_handler(fixture.settings(), "PostToolUse")
+        result = run_handler(
+            audit, encoded(official_payload("PostToolUse", tool_response={"stdout": "ok"})), fixture
+        )
+        assert result.returncode == 0, result.stderr
+        assert _MismatchApi.submissions[0]["prev_chain_hash"] == "A" * 43
+        state = json.loads((fixture.agent_dir / "chain-state.json").read_text(encoding="utf-8"))
+        assert state["prev_chain_hash"] == "B" * 43
+    finally:
+        server.shutdown()
+
+
+def test_audit_clears_a_stale_chain_state_lock_and_proceeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    server = _mismatch_server(0)
+    fixture = prepare_fixture(monkeypatch, tmp_path, base_url=server_base_url(server))
+    try:
+        fixture.install()
+        lock_path = fixture.agent_dir / "chain-state.json.lock"
+        lock_path.touch(mode=0o600)
+        stale = time.time() - 10
+        os.utime(lock_path, (stale, stale))
+        audit = managed_handler(fixture.settings(), "PostToolUse")
+        result = run_handler(
+            audit, encoded(official_payload("PostToolUse", tool_response={"stdout": "ok"})), fixture
+        )
+        assert result.returncode == 0, result.stderr
+        assert len(_MismatchApi.submissions) == 1
+        assert not lock_path.exists()
+        state = json.loads((fixture.agent_dir / "chain-state.json").read_text(encoding="utf-8"))
+        assert state["prev_chain_hash"] == _MismatchApi.submissions[0]["chain_hash"]
+    finally:
+        server.shutdown()
+
+
+def test_audit_does_not_reclaim_a_lock_whose_owner_is_alive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    server = _mismatch_server(0)
+    fixture = prepare_fixture(monkeypatch, tmp_path, base_url=server_base_url(server))
+    try:
+        fixture.install()
+        lock_path = fixture.agent_dir / "chain-state.json.lock"
+        lock_path.touch(mode=0o600)
+        lock_path.write_text(str(os.getpid()), encoding="ascii")
+        stale = time.time() - 10
+        os.utime(lock_path, (stale, stale))
+        audit = managed_handler(fixture.settings(), "PostToolUse")
+        result = run_handler(
+            audit, encoded(official_payload("PostToolUse", tool_response={"stdout": "ok"})), fixture
+        )
+        assert result.returncode == 0, result.stderr
+        assert len(_MismatchApi.submissions) == 1
+        assert lock_path.exists()
+        assert "lock timed out" in (fixture.agent_dir / "error.log").read_text(encoding="utf-8")
     finally:
         server.shutdown()

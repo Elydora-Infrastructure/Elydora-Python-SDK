@@ -185,6 +185,77 @@ def write_chain_state(chain_hash):
     )
 
 
+def lock_owner_alive(lock_path):
+    if os.name == "nt":
+        return False
+    try:
+        with open(lock_path, "r", encoding="ascii") as handle:
+            owner = int(handle.read().strip() or "0")
+    except (FileNotFoundError, ValueError):
+        return False
+    if owner <= 0:
+        return False
+    try:
+        os.kill(owner, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def with_chain_lock(update):
+    lock_path = CHAIN_STATE_PATH + ".lock"
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            descriptor = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.write(descriptor, str(os.getpid()).encode("ascii"))
+        except FileExistsError:
+            if lock_owner_alive(lock_path):
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Chain state lock timed out: " + lock_path)
+                time.sleep(0.01)
+                continue
+            try:
+                age = time.time() - os.stat(lock_path).st_mtime
+            except FileNotFoundError:
+                age = 0.0
+            if age > 5.0:
+                reclaimed = lock_path + "." + str(os.getpid()) + ".stale"
+                try:
+                    os.rename(lock_path, reclaimed)
+                    os.unlink(reclaimed)
+                except FileNotFoundError:
+                    pass
+                continue
+            if time.monotonic() > deadline:
+                raise RuntimeError("Chain state lock timed out: " + lock_path)
+            time.sleep(0.01)
+            continue
+        try:
+            return update()
+        finally:
+            try:
+                current = os.lstat(lock_path)
+            except FileNotFoundError:
+                current = None
+            own = os.fstat(descriptor)
+            os.close(descriptor)
+            if current is not None and current.st_ino == own.st_ino and current.st_dev == own.st_dev:
+                os.unlink(lock_path)
+
+
+def advance_chain_state(from_hash, to_hash):
+    def update():
+        if read_chain_state() != from_hash:
+            return False
+        write_chain_state(to_hash)
+        return True
+
+    return with_chain_lock(update)
+
+
 def read_runtime_config():
     try:
         raw = read_protected_file(
@@ -335,13 +406,13 @@ def submit_operation(event, runtime):
         operation, chain_hash = build_operation(runtime, seed, payload, payload_hash, tool_name, session_id, previous)
         expected = post_operation(operation, runtime, deadline)
         if expected is None:
-            write_chain_state(chain_hash)
+            advance_chain_state(previous, chain_hash)
             return
-        write_chain_state(expected)
+        advance_chain_state(previous, expected)
         log_error("Chain hash resynced to server: " + expected)
         if attempt >= MAX_CHAIN_ATTEMPTS:
             raise RuntimeError("Audit API rejected prev_chain_hash " + str(attempt) + " times")
-        previous = expected
+        previous = read_chain_state()
 
 def main():
     try:
