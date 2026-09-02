@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from typing import Any
 
 import pytest
 
@@ -144,3 +148,118 @@ def test_runtime_failures_are_observable_and_fail_open(
     log = (fixture.agent_dir / "error.log").read_text(encoding="utf-8")
     assert "invalid JSON" in log
     assert "refused" in log.lower() or "urlopen" in log.lower()
+
+
+class _MismatchApi(BaseHTTPRequestHandler):
+    submissions: list[dict[str, Any]] = []
+    rejections = 1
+    delay = 0.0
+    expected = "Rxlf4j36C3KvIQ3hWuOkX698BR5iDypUFuB70JjEuvM"
+
+    @classmethod
+    def reset(cls, rejections: int, delay: float = 0.0) -> None:
+        cls.submissions = []
+        cls.rejections = rejections
+        cls.delay = delay
+
+    def _respond(self, status: int, value: object) -> None:
+        body = json.dumps(value).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        self._respond(200, {"agent": {"status": "active"}})
+
+    def do_POST(self) -> None:
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        cls = type(self)
+        cls.submissions.append(json.loads(raw))
+        count = len(cls.submissions)
+        if cls.delay:
+            time.sleep(cls.delay)
+        if count > cls.rejections:
+            self._respond(202, {"receipt": {"seq_no": count}})
+            return
+        expected = cls.expected if cls.rejections == 1 else str(count).rjust(43, "A")
+        self._respond(400, {"error": {
+            "code": "PREV_HASH_MISMATCH",
+            "message": f'Expected prev_chain_hash "{expected}", got "x".',
+        }})
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+
+def _mismatch_server(rejections: int, delay: float = 0.0) -> ThreadingHTTPServer:
+    _MismatchApi.reset(rejections, delay)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _MismatchApi)
+    Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_audit_retries_rejected_prev_chain_hash_with_server_value(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    server = _mismatch_server(1)
+    fixture = prepare_fixture(monkeypatch, tmp_path, base_url=server_base_url(server))
+    try:
+        fixture.install()
+        audit = managed_handler(fixture.settings(), "PostToolUse")
+        result = run_handler(
+            audit, encoded(official_payload("PostToolUse", tool_response={"stdout": "ok"})), fixture
+        )
+        assert result.returncode == 0, result.stderr
+        submissions = _MismatchApi.submissions
+        assert len(submissions) == 2
+        assert submissions[1]["prev_chain_hash"] == _MismatchApi.expected
+        assert submissions[1]["operation_id"] != submissions[0]["operation_id"]
+        assert submissions[1]["nonce"] != submissions[0]["nonce"]
+        state = json.loads((fixture.agent_dir / "chain-state.json").read_text(encoding="utf-8"))
+        assert state["prev_chain_hash"] == submissions[1]["chain_hash"]
+        assert "resynced to server: Rxlf" in (fixture.agent_dir / "error.log").read_text(encoding="utf-8")
+    finally:
+        server.shutdown()
+
+
+def test_audit_stops_after_five_rejected_prev_chain_hash_attempts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    server = _mismatch_server(99)
+    fixture = prepare_fixture(monkeypatch, tmp_path, base_url=server_base_url(server))
+    try:
+        fixture.install()
+        audit = managed_handler(fixture.settings(), "PostToolUse")
+        result = run_handler(
+            audit, encoded(official_payload("PostToolUse", tool_response={"stdout": "ok"})), fixture
+        )
+        assert result.returncode == 0, result.stderr
+        assert len(_MismatchApi.submissions) == 5
+        assert _MismatchApi.submissions[4]["prev_chain_hash"] == "4".rjust(43, "A")
+        assert "rejected prev_chain_hash 5 times" in (fixture.agent_dir / "error.log").read_text(encoding="utf-8")
+    finally:
+        server.shutdown()
+
+
+def test_audit_stops_retrying_when_the_submit_budget_is_spent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    server = _mismatch_server(99, delay=2.6)
+    fixture = prepare_fixture(monkeypatch, tmp_path, base_url=server_base_url(server))
+    try:
+        fixture.install()
+        audit = managed_handler(fixture.settings(), "PostToolUse")
+        started = time.monotonic()
+        result = run_handler(
+            audit, encoded(official_payload("PostToolUse", tool_response={"stdout": "ok"})), fixture
+        )
+        elapsed = time.monotonic() - started
+        assert result.returncode == 0, result.stderr
+        assert elapsed < 7.5, elapsed
+        assert 2 <= len(_MismatchApi.submissions) <= 3
+        log = (fixture.agent_dir / "error.log").read_text(encoding="utf-8").lower()
+        assert "timed out" in log or "retry budget exhausted" in log
+    finally:
+        server.shutdown()
