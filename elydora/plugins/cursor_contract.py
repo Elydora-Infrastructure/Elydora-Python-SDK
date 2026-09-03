@@ -7,8 +7,17 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+from elydora._runtime_paths import runtime_root
+
+from ._runtime import managed_script_reference, same_agent_id, same_path
+from ._shell_command import (
+    parse_posix_command,
+    parse_powershell_source,
+    posix_source,
+    powershell_source,
+)
 from ._strict_json import JsonObject, parse_json_object
 
 
@@ -43,114 +52,13 @@ class RuntimeContract:
     audit_path: str
 
 
-@dataclass(frozen=True)
-class _ParsedArgument:
-    value: str
-    next_index: int
-
-
-def runtime_root() -> str:
-    return os.path.join(os.path.expanduser("~"), ".elydora")
-
-
-def same_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
-
-
-def _same_agent_id(left: str, right: str) -> bool:
-    return os.path.normcase(left) == os.path.normcase(right)
-
-
-def _quote_posix(value: str) -> str:
-    return "'" + value.replace("'", "'\"'\"'") + "'"
-
-
-def _quote_powershell(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
 def build_handler(script_path: str) -> JsonObject:
-    if os.name == "nt":
-        command = (
-            f"& {_quote_powershell(sys.executable)} "
-            f"{_quote_powershell(script_path)}; exit $LASTEXITCODE"
-        )
-    else:
-        command = f"{_quote_posix(sys.executable)} {_quote_posix(script_path)}"
+    command = powershell_source(script_path) if os.name == "nt" else posix_source(script_path)
     return {
         "command": command,
         "timeout": HOOK_TIMEOUT_SECONDS,
         "failClosed": True,
     }
-
-
-def _read_posix_argument(command: str, start: int) -> Optional[_ParsedArgument]:
-    if start >= len(command) or command[start] != "'":
-        return None
-    apostrophe = "'\"'\"'"
-    value = ""
-    index = start + 1
-    while index < len(command):
-        if command.startswith(apostrophe, index):
-            value += "'"
-            index += len(apostrophe)
-            continue
-        if command[index] == "'":
-            return _ParsedArgument(value, index + 1)
-        value += command[index]
-        index += 1
-    return None
-
-
-def _parse_posix_command(command: str) -> Optional[Tuple[str, str]]:
-    executable = _read_posix_argument(command, 0)
-    if (
-        executable is None
-        or command[executable.next_index : executable.next_index + 1] != " "
-    ):
-        return None
-    script = _read_posix_argument(command, executable.next_index + 1)
-    if script is None or script.next_index != len(command):
-        return None
-    return executable.value, script.value
-
-
-def _read_powershell_argument(
-    command: str,
-    start: int,
-) -> Optional[_ParsedArgument]:
-    if start >= len(command) or command[start] != "'":
-        return None
-    value = ""
-    index = start + 1
-    while index < len(command):
-        if command[index] != "'":
-            value += command[index]
-            index += 1
-            continue
-        if index + 1 < len(command) and command[index + 1] == "'":
-            value += "'"
-            index += 2
-            continue
-        return _ParsedArgument(value, index + 1)
-    return None
-
-
-def _parse_powershell_command(command: str) -> Optional[Tuple[str, str]]:
-    if not command.startswith("& "):
-        return None
-    executable = _read_powershell_argument(command, 2)
-    if (
-        executable is None
-        or command[executable.next_index : executable.next_index + 1] != " "
-    ):
-        return None
-    script = _read_powershell_argument(command, executable.next_index + 1)
-    if script is None or command[script.next_index :] != "; exit $LASTEXITCODE":
-        return None
-    return executable.value, script.value
 
 
 def _legacy_script_path(command: str) -> Optional[str]:
@@ -169,9 +77,9 @@ def _managed_script_path(handler: JsonObject) -> Optional[str]:
         and handler.get("failClosed") is True
     ):
         parsed = (
-            _parse_powershell_command(handler["command"])
+            parse_powershell_source(handler["command"])
             if os.name == "nt"
-            else _parse_posix_command(handler["command"])
+            else parse_posix_command(handler["command"])
         )
         if (
             parsed is not None
@@ -185,18 +93,12 @@ def _managed_script_path(handler: JsonObject) -> Optional[str]:
     return _legacy_script_path(handler["command"])
 
 
-def _managed_agent_id(
-    handler: JsonObject,
-    script_name: str,
-) -> Optional[str]:
+def _managed_agent_id(handler: JsonObject, script_name: str) -> Optional[str]:
     script_path = _managed_script_path(handler)
-    if script_path is None or os.path.basename(script_path) != script_name:
+    if script_path is None:
         return None
-    agent_directory = os.path.dirname(script_path)
-    if not same_path(os.path.dirname(agent_directory), runtime_root()):
-        return None
-    agent_id = os.path.basename(agent_directory)
-    return agent_id if agent_id not in {"", ".", ".."} else None
+    reference = managed_script_reference(script_path, script_name)
+    return None if reference is None else reference[0]
 
 
 def _read_hooks(value: Any, label: str) -> CursorHooks:
@@ -256,7 +158,7 @@ def remove_managed_hooks(
         for handler in result.get(event, []):
             managed_id = _managed_agent_id(handler, script_name)
             remove = managed_id is not None and (
-                not agent_id or _same_agent_id(managed_id, agent_id)
+                not agent_id or same_agent_id(managed_id, agent_id)
             )
             if not remove:
                 handlers.append(handler)

@@ -7,11 +7,11 @@ import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from ._runtime import same_agent_id
 from .gemini_command import (
     GeminiRuntimeReference,
     build_gemini_command,
     gemini_runtime_reference,
-    same_gemini_agent_id,
 )
 
 
@@ -61,10 +61,6 @@ class ManagedRemoval:
     group_index: int
     handler_indexes: Tuple[int, ...]
     remove_group: bool
-
-
-def elydora_dir() -> str:
-    return os.path.join(os.path.expanduser("~"), ".elydora")
 
 
 def _optional_string(value: JsonObject, field: str, label: str) -> None:
@@ -286,7 +282,7 @@ def managed_gemini_removals(
                 is not None
                 and (
                     agent_id is None
-                    or same_gemini_agent_id(reference.agent_id, agent_id)
+                    or same_agent_id(reference.agent_id, agent_id)
                 )
             )
             if indexes:

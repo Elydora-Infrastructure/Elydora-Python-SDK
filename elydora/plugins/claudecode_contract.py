@@ -11,6 +11,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.parse
 
+from ._runtime import managed_script_reference, same_agent_id, same_path
 from ._strict_json import JsonObject, parse_json_object
 
 
@@ -80,20 +81,6 @@ class ClaudeRuntimeContract:
 class _RuntimeReference:
     agent_id: str
     script_path: str
-
-
-def runtime_root() -> str:
-    return os.path.join(os.path.expanduser("~"), ".elydora")
-
-
-def same_claude_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
-
-
-def same_claude_agent_id(left: str, right: str) -> bool:
-    return os.path.normcase(left) == os.path.normcase(right)
 
 
 def _require_known_keys(
@@ -292,15 +279,8 @@ def _exact_managed_group(group: JsonObject) -> bool:
 def _runtime_reference(
     script_path: str, script_name: str
 ) -> Optional[_RuntimeReference]:
-    if not os.path.isabs(script_path) or os.path.basename(script_path) != script_name:
-        return None
-    agent_directory = os.path.dirname(script_path)
-    if not same_claude_path(os.path.dirname(agent_directory), runtime_root()):
-        return None
-    agent_id = os.path.basename(agent_directory)
-    if agent_id in ("", ".", ".."):
-        return None
-    return _RuntimeReference(agent_id, script_path)
+    reference = managed_script_reference(script_path, script_name)
+    return None if reference is None else _RuntimeReference(*reference)
 
 
 def _legacy_reference(
@@ -314,7 +294,7 @@ def _legacy_reference(
     if (
         match is None
         or not os.path.isabs(match.group(1))
-        or not same_claude_path(match.group(1), sys.executable)
+        or not same_path(match.group(1), sys.executable)
     ):
         return None
     return _runtime_reference(match.group(2), script_name)
@@ -334,7 +314,7 @@ def _managed_reference(
         and handler.get("statusMessage") == status_message
         and isinstance(handler.get("command"), str)
         and os.path.isabs(str(handler["command"]))
-        and same_claude_path(str(handler["command"]), sys.executable)
+        and same_path(str(handler["command"]), sys.executable)
         and isinstance(handler.get("args"), list)
         and len(handler["args"]) == 1
         and isinstance(handler["args"][0], str)
@@ -365,7 +345,7 @@ def _remove_from_groups(
             )
             owned = reference is not None and (
                 not agent_id
-                or same_claude_agent_id(reference.agent_id, agent_id)
+                or same_agent_id(reference.agent_id, agent_id)
             )
             if owned:
                 removed = True
@@ -485,7 +465,7 @@ def claude_runtime_contracts(
         failure = failures.get(key, [])
         if len(guard) != 1 or len(success) != 1 or len(failure) != 1:
             continue
-        if not same_claude_path(success[0].script_path, failure[0].script_path):
+        if not same_path(success[0].script_path, failure[0].script_path):
             continue
         contracts.append(ClaudeRuntimeContract(
             guard[0].agent_id,
