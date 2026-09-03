@@ -8,13 +8,13 @@ from typing import Dict, List, Optional, Tuple
 
 from ._jsonc import JsonPathPart, JsoncEditor
 from ._managed_files import FileSnapshot
+from ._runtime import same_path
 from .droid_contract import (
     TOOL_EVENTS,
     DroidHookMap,
     JsonObject,
     managed_removals,
     read_hook_map,
-    same_path,
 )
 from .droid_policy import DroidPolicyState
 

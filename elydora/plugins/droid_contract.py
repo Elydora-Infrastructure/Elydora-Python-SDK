@@ -12,6 +12,16 @@ import subprocess  # nosec B404
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from elydora._runtime_paths import runtime_root
+
+from ._runtime import managed_script_reference, same_agent_id, same_path
+from ._shell_command import (
+    parse_posix_command,
+    parse_powershell_source,
+    posix_source,
+    powershell_source,
+)
+
 
 AGENT_KEY = "droid"
 GUARD_SCRIPT = "guard.py"
@@ -22,7 +32,6 @@ TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 _HANDLER_KEYS = {"command", "timeout", "type"}
 _GROUP_KEYS = {"hooks", "matcher"}
 _REGEX_TIMEOUT_SECONDS = 10
-_WINDOWS_EXIT_SUFFIX = "; exit $LASTEXITCODE"
 _REGEX_VALIDATOR = """import fs from 'node:fs';
 const entries = JSON.parse(fs.readFileSync(0, 'utf8'));
 for (const entry of entries) {
@@ -55,39 +64,14 @@ class ManagedRemoval:
     remove_group: bool
 
 
-def elydora_dir() -> str:
-    return os.path.join(os.path.expanduser("~"), ".elydora")
-
-
-def same_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
-
-
-def same_agent_id(left: str, right: str) -> bool:
-    return os.path.normcase(left) == os.path.normcase(right)
-
-
-def _quote_power_shell(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _quote_posix(value: str) -> str:
-    return "'" + value.replace("'", "'\"'\"'") + "'"
-
-
 def build_command(script_path: str) -> str:
     if not os.path.isabs(sys.executable) or not os.path.isabs(script_path):
         raise ValueError(
             "Factory Droid hook commands require absolute executable and script paths"
         )
     if os.name == "nt":
-        return (
-            f"& {_quote_power_shell(sys.executable)} "
-            f"{_quote_power_shell(script_path)}{_WINDOWS_EXIT_SUFFIX}"
-        )
-    return f"{_quote_posix(sys.executable)} {_quote_posix(script_path)}"
+        return powershell_source(script_path)
+    return posix_source(script_path)
 
 
 def build_group(script_path: str) -> JsonObject:
@@ -214,83 +198,6 @@ def validate_javascript_regexes(sources: Sequence[DroidHookMap]) -> None:
     )
 
 
-def _read_power_shell_argument(
-    command: str,
-    start: int,
-) -> Optional[Tuple[str, int]]:
-    if start >= len(command) or command[start] != "'":
-        return None
-    value = ""
-    index = start + 1
-    while index < len(command):
-        if command[index] != "'":
-            value += command[index]
-            index += 1
-            continue
-        if index + 1 < len(command) and command[index + 1] == "'":
-            value += "'"
-            index += 2
-            continue
-        return value, index + 1
-    return None
-
-
-_POSIX_APOSTROPHE = "'\"'\"'"
-
-
-def _read_posix_argument(command: str, start: int) -> Optional[Tuple[str, int]]:
-    if start >= len(command) or command[start] != "'":
-        return None
-    value = ""
-    index = start + 1
-    while index < len(command):
-        if command.startswith(_POSIX_APOSTROPHE, index):
-            value += "'"
-            index += len(_POSIX_APOSTROPHE)
-            continue
-        if command[index] == "'":
-            return value, index + 1
-        value += command[index]
-        index += 1
-    return None
-
-
-def _parse_two_arguments(
-    command: str,
-    start: int,
-) -> Optional[Tuple[str, str]]:
-    executable = _read_posix_argument(command, start)
-    if executable is None or executable[1] >= len(command):
-        return None
-    if command[executable[1]] != " ":
-        return None
-    script = _read_posix_argument(command, executable[1] + 1)
-    if script is None or script[1] != len(command):
-        return None
-    if not executable[0] or not script[0]:
-        return None
-    return executable[0], script[0]
-
-
-def _parse_power_shell_command(command: str) -> Optional[Tuple[str, str]]:
-    if not command.startswith("& "):
-        return None
-    executable = _read_power_shell_argument(command, 2)
-    if executable is None or executable[1] >= len(command):
-        return None
-    if command[executable[1]] != " ":
-        return None
-    script = _read_power_shell_argument(command, executable[1] + 1)
-    if (
-        script is None
-        or command[script[1]:] != _WINDOWS_EXIT_SUFFIX
-        or not executable[0]
-        or not script[0]
-    ):
-        return None
-    return executable[0], script[0]
-
-
 def _parse_legacy_windows_command(command: str) -> Optional[Tuple[str, str]]:
     match = re.fullmatch(r'"([^"\r\n]+)" "([^"\r\n]+)"', command)
     return (match.group(1), match.group(2)) if match else None
@@ -301,8 +208,8 @@ def _parse_generated_command(
     include_legacy: bool,
 ) -> Optional[Tuple[str, str]]:
     if os.name != "nt":
-        return _parse_two_arguments(command, 0)
-    current = _parse_power_shell_command(command)
+        return parse_posix_command(command)
+    current = parse_powershell_source(command)
     return current or (
         _parse_legacy_windows_command(command) if include_legacy else None
     )
@@ -326,14 +233,8 @@ def managed_agent_id(
     parsed = _parse_generated_command(command, include_legacy)
     if parsed is None or not same_path(parsed[0], sys.executable):
         return None
-    script_path = parsed[1]
-    if os.path.basename(script_path) != script_name:
-        return None
-    agent_directory = os.path.dirname(script_path)
-    if not same_path(os.path.dirname(agent_directory), elydora_dir()):
-        return None
-    agent_id = os.path.basename(agent_directory)
-    return agent_id if agent_id not in {"", ".", ".."} else None
+    reference = managed_script_reference(parsed[1], script_name)
+    return None if reference is None else reference[0]
 
 
 def _exact_owned_group(group: JsonObject, indexes: Tuple[int, ...]) -> bool:
@@ -397,7 +298,7 @@ def runtime_contracts(hooks: DroidHookMap) -> List[RuntimeContract]:
     for agent_id in sorted(guards):
         if not any(same_agent_id(agent_id, audit_id) for audit_id in audits):
             continue
-        root = os.path.join(elydora_dir(), agent_id)
+        root = os.path.join(runtime_root(), agent_id)
         contracts.append(RuntimeContract(
             agent_id,
             os.path.join(root, GUARD_SCRIPT),

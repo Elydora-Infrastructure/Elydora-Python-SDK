@@ -7,10 +7,19 @@ import json
 import os
 import re
 import shlex
-import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+from elydora._runtime_paths import runtime_root
+
 from ._managed_files import FileSnapshot
+from ._runtime import same_agent_id, same_path
+from ._shell_command import (
+    is_python_executable,
+    parse_posix_command,
+    parse_powershell_source,
+    posix_source,
+    powershell_source,
+)
 from ._strict_json import parse_json_object
 from .copilot_schema import CopilotHooks, validate_hooks
 
@@ -70,123 +79,34 @@ class RuntimeContract:
 
 
 @dataclass(frozen=True)
-class _ParsedArgument:
-    value: str
-    next_index: int
-
-
-@dataclass(frozen=True)
 class _ManagedEntry:
     agent_id: str
     script_path: str
 
 
-def runtime_root() -> str:
-    return os.path.join(os.path.expanduser("~"), ".elydora")
-
-
-def same_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
-
-
-def same_agent_id(left: str, right: str) -> bool:
-    return os.path.normcase(left) == os.path.normcase(right)
-
-
-def _quote_posix(value: str) -> str:
-    return "'" + value.replace("'", "'\"'\"'") + "'"
-
-
-def _quote_powershell(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
 def build_handler(script_path: str) -> JsonObject:
     return {
         "type": "command",
-        "bash": f"{_quote_posix(sys.executable)} {_quote_posix(script_path)}",
-        "powershell": (
-            f"& {_quote_powershell(sys.executable)} "
-            f"{_quote_powershell(script_path)}; exit $LASTEXITCODE"
-        ),
+        "bash": posix_source(script_path),
+        "powershell": powershell_source(script_path),
         "timeoutSec": HOOK_TIMEOUT_SECONDS,
     }
-
-
-def _read_posix_argument(command: str, start: int) -> Optional[_ParsedArgument]:
-    if start >= len(command) or command[start] != "'":
-        return None
-    apostrophe = "'\"'\"'"
-    value = ""
-    index = start + 1
-    while index < len(command):
-        if command.startswith(apostrophe, index):
-            value += "'"
-            index += len(apostrophe)
-            continue
-        if command[index] == "'":
-            return _ParsedArgument(value, index + 1)
-        value += command[index]
-        index += 1
-    return None
-
-
-def _parse_generated_bash(command: Any) -> Optional[Tuple[str, str]]:
-    if not isinstance(command, str):
-        return None
-    executable = _read_posix_argument(command, 0)
-    if executable is None or command[executable.next_index:executable.next_index + 1] != " ":
-        return None
-    script = _read_posix_argument(command, executable.next_index + 1)
-    if script is None or script.next_index != len(command):
-        return None
-    return executable.value, script.value
-
-
-def _read_powershell_argument(
-    command: str, start: int
-) -> Optional[_ParsedArgument]:
-    if start >= len(command) or command[start] != "'":
-        return None
-    value = ""
-    index = start + 1
-    while index < len(command):
-        if command[index] != "'":
-            value += command[index]
-            index += 1
-            continue
-        if index + 1 < len(command) and command[index + 1] == "'":
-            value += "'"
-            index += 2
-            continue
-        return _ParsedArgument(value, index + 1)
-    return None
-
-
-def _parse_generated_powershell(command: Any) -> Optional[Tuple[str, str]]:
-    if not isinstance(command, str) or not command.startswith("& "):
-        return None
-    executable = _read_powershell_argument(command, 2)
-    if executable is None or command[executable.next_index:executable.next_index + 1] != " ":
-        return None
-    script = _read_powershell_argument(command, executable.next_index + 1)
-    if script is None or command[script.next_index:] != "; exit $LASTEXITCODE":
-        return None
-    return executable.value, script.value
 
 
 def _exact_handler_keys(handler: JsonObject) -> bool:
     return set(handler) == {"type", "bash", "powershell", "timeoutSec"}
 
 
-def _is_python_executable(file_path: str) -> bool:
-    return os.path.isabs(file_path) and re.fullmatch(
-        r"(?:python|pypy)(?:[0-9]+(?:\.[0-9]+)*)?(?:\.exe)?",
-        os.path.basename(file_path),
-        re.IGNORECASE,
-    ) is not None
+def _parse_generated_bash(command: Any) -> Optional[Tuple[str, str]]:
+    return parse_posix_command(command) if isinstance(command, str) else None
+
+
+def _parse_generated_powershell(command: Any) -> Optional[Tuple[str, str]]:
+    return parse_powershell_source(command) if isinstance(command, str) else None
+
+
+def _absolute_python(file_path: str) -> bool:
+    return os.path.isabs(file_path) and is_python_executable(file_path)
 
 
 def _current_script_path(handler: JsonObject) -> Optional[str]:
@@ -201,7 +121,7 @@ def _current_script_path(handler: JsonObject) -> Optional[str]:
     if (
         bash is None
         or powershell is None
-        or not _is_python_executable(bash[0])
+        or not _absolute_python(bash[0])
         or not same_path(bash[0], powershell[0])
         or not same_path(bash[1], powershell[1])
     ):
@@ -227,7 +147,7 @@ def _prior_script_path(handler: JsonObject) -> Optional[str]:
         len(arguments) != 2
         or shlex.join(arguments) != bash_command
         or powershell is None
-        or not _is_python_executable(arguments[0])
+        or not _absolute_python(arguments[0])
         or not same_path(arguments[0], powershell[0])
         or not same_path(arguments[1], powershell[1])
     ):

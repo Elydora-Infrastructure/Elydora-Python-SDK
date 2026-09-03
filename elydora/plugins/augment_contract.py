@@ -9,6 +9,9 @@ import os
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from elydora._runtime_paths import runtime_root
+
+from ._runtime import same_agent_id, same_path
 from ._strict_json import parse_json_object
 
 
@@ -67,10 +70,6 @@ class RuntimeContract:
 
 def home_dir() -> str:
     return os.path.expanduser("~")
-
-
-def elydora_dir() -> str:
-    return os.path.join(home_dir(), ".elydora")
 
 
 def resolve_config_path() -> str:
@@ -162,16 +161,6 @@ def _parse_wrapper_command(command: str) -> Optional[str]:
     return parser(command)
 
 
-def _same_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
-
-
-def _same_agent_id(left: str, right: str) -> bool:
-    return os.path.normcase(left) == os.path.normcase(right)
-
-
 def _managed_agent_id(handler: JsonObject, wrapper_name: str) -> Optional[str]:
     if (
         handler.get("type") != "command"
@@ -188,7 +177,7 @@ def _managed_agent_id(handler: JsonObject, wrapper_name: str) -> Optional[str]:
     ):
         return None
     agent_directory = os.path.dirname(wrapper_path)
-    if not _same_path(os.path.dirname(agent_directory), elydora_dir()):
+    if not same_path(os.path.dirname(agent_directory), runtime_root()):
         return None
     agent_id = os.path.basename(agent_directory)
     return agent_id if agent_id not in {"", ".", ".."} else None
@@ -324,7 +313,7 @@ def _remove_managed(
         for handler in group["hooks"]:
             managed_id = _managed_agent_id(handler, wrapper_name)
             remove = managed_id is not None and (
-                not agent_id or _same_agent_id(managed_id, agent_id)
+                not agent_id or same_agent_id(managed_id, agent_id)
             )
             if remove:
                 changed = True
@@ -376,12 +365,12 @@ def runtime_contracts(hooks: AugmentHooks) -> List[RuntimeContract]:
     contracts: List[RuntimeContract] = []
     for guard_id in sorted(guards, key=os.path.normcase):
         audit_id = next(
-            (candidate for candidate in audits if _same_agent_id(candidate, guard_id)),
+            (candidate for candidate in audits if same_agent_id(candidate, guard_id)),
             None,
         )
         if audit_id is None:
             continue
-        agent_directory = os.path.join(elydora_dir(), guard_id)
+        agent_directory = os.path.join(runtime_root(), guard_id)
         contracts.append(
             RuntimeContract(
                 agent_id=guard_id,

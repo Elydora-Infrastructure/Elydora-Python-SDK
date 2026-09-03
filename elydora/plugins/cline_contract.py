@@ -8,7 +8,9 @@ import json
 import os
 from typing import Any, Dict, Optional
 
-from elydora._runtime_paths import resolve_agent_directory
+from elydora._runtime_paths import resolve_agent_directory, runtime_root
+
+from ._runtime import same_agent_id, same_path
 
 
 AGENT_KEY = "cline"
@@ -56,20 +58,6 @@ class RuntimeContract:
 
 def home_dir() -> str:
     return os.path.expanduser("~")
-
-
-def elydora_dir() -> str:
-    return os.path.join(home_dir(), ".elydora")
-
-
-def same_agent_id(left: str, right: str) -> bool:
-    return os.path.normcase(left) == os.path.normcase(right)
-
-
-def _same_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
 
 
 def resolve_hooks_directory() -> str:
@@ -267,10 +255,10 @@ def runtime_contract(
         raise ValueError("Elydora Cline hook files contain mismatched event metadata")
     if not same_agent_id(guard.agent_id, audit.agent_id):
         raise ValueError("Elydora Cline hook files reference different agents")
-    agent_directory = resolve_agent_directory(elydora_dir(), guard.agent_id)
+    agent_directory = resolve_agent_directory(runtime_root(), guard.agent_id)
     expected_guard = os.path.join(agent_directory, GUARD_SCRIPT)
     expected_audit = os.path.join(agent_directory, AUDIT_SCRIPT)
-    if not _same_path(guard.runtime_path, expected_guard) or not _same_path(
+    if not same_path(guard.runtime_path, expected_guard) or not same_path(
         audit.runtime_path, expected_audit
     ):
         raise ValueError(

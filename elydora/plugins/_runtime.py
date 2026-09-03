@@ -22,6 +22,8 @@ from ._managed_files import (
 from ._strict_json import JsonObject, parse_json_object
 from ._transaction import FileChange, file_change, source_change
 from .base import InstallConfig
+from .guard_template import generate_guard_script
+from .hook_template import generate_hook_script
 
 
 GUARD_SCRIPT = "guard.py"
@@ -215,7 +217,11 @@ def validate_install_config(
 
 
 def validate_runtime_tree(
-    agent_directory: str, agent_id: str, agent_key: str, product_label: str
+    agent_directory: str,
+    agent_id: str,
+    agent_key: str,
+    product_label: str,
+    extra_artifacts: Tuple[Tuple[str, str], ...] = (),
 ) -> None:
     """Reject an existing agent directory that belongs to another identity."""
     if not physical_directory_exists(runtime_root(), "Elydora runtime directory"):
@@ -226,7 +232,7 @@ def validate_runtime_tree(
     config = read_runtime_config(config_path)
     artifact_states = [
         physical_file_exists(os.path.join(agent_directory, name), label)
-        for name, label in RUNTIME_ARTIFACTS
+        for name, label in (*RUNTIME_ARTIFACTS, *extra_artifacts)
     ]
     artifact_exists = any(artifact_states)
     if config is None:
@@ -246,10 +252,27 @@ def validate_runtime_tree(
         )
 
 
+def expected_runtime_scripts(agent_key: str, agent_id: str) -> Tuple[str, str]:
+    return (
+        generate_guard_script(agent_key, agent_id),
+        generate_hook_script(
+            org_id="",
+            agent_id=agent_id,
+            kid="",
+            base_url="",
+            native_payload=True,
+            agent_name=agent_key,
+        ),
+    )
+
+
 def runtime_contract_exists(
-    contract: RuntimeContractLike, agent_key: str, product_label: str
+    contract: RuntimeContractLike,
+    agent_key: str,
+    product_label: str,
+    expected_scripts: Optional[Tuple[str, str]] = None,
 ) -> bool:
-    """Strict status check: valid config and key plus non-empty runtime scripts."""
+    """Strict status check: valid config and key plus runtime scripts."""
     root = runtime_root()
     agent_directory = os.path.dirname(contract.guard_path)
     if not same_path(os.path.dirname(agent_directory), root) or not same_path(
@@ -271,7 +294,9 @@ def runtime_contract_exists(
         return False
     validate_runtime_config(config, contract.agent_id, config_path, agent_key, product_label)
     validate_private_key(key.contents, "Elydora private key")
-    return bool(guard.contents) and bool(audit.contents)
+    if expected_scripts is None:
+        return bool(guard.contents) and bool(audit.contents)
+    return guard.contents == expected_scripts[0] and audit.contents == expected_scripts[1]
 
 
 def runtime_present(contract: RuntimeContractLike, agent_key: str) -> bool:
