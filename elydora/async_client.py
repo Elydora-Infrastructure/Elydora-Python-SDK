@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
-import time
 import warnings
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
 
 from ._async_http import request_with_retries
+from ._client_common import (
+    DEFAULT_BASE_URL,
+    GENESIS_CHAIN_HASH,
+    REQUEST_TIMEOUT_SECONDS,
+    admin_events_params,
+    api_token_body,
+    build_eor,
+    build_headers,
+    error_from_response,
+    export_body,
+    register_body,
+    without_none,
+)
 from ._retry import require_max_retries
-from .crypto import compute_chain_hash, compute_payload_hash, sign_eor
-from .errors import ElydoraError
 from .integration_types import require_integration_type
 from .types import (
     AuditQueryResponse,
@@ -21,35 +31,33 @@ from .types import (
     DeepHealthResponse,
     DeleteAgentResponse,
     EOR,
+    FreezeAgentResponse,
     GetAgentResponse,
     GetEpochResponse,
     GetExportResponse,
     GetMeResponse,
     GetOperationResponse,
     HealthResponse,
-    IssueApiTokenResponse,
     IntegrationType,
-    ListAdminEventsResponse,
-    ListMembersResponse,
-    ListWebhooksResponse,
-    RotateApiTokenResponse,
+    IssueApiTokenResponse,
     JWKSResponse,
+    ListAdminEventsResponse,
     ListAgentsResponse,
     ListEpochsResponse,
     ListExportsResponse,
+    ListMembersResponse,
+    ListWebhooksResponse,
     RegisterAgentRequest,
     RegisterAgentResponse,
     RegisterWebhookResponse,
+    RotateApiTokenResponse,
     SubmitOperationResponse,
     UnfreezeAgentResponse,
     UpdateAgentResponse,
     VerifyOperationResponse,
 )
-from .utils import generate_nonce, generate_uuidv7
 
-# The genesis chain hash: base64url encoding of 32 zero bytes.
-# Must match the backend's GENESIS_CHAIN_HASH constant exactly.
-GENESIS_CHAIN_HASH = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+TIMEOUT = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
 
 
 class AsyncElydoraClient:
@@ -61,7 +69,7 @@ class AsyncElydoraClient:
         private_key: Base64url-encoded 32-byte Ed25519 private key seed.
         base_url: API base URL.
         ttl_ms: Time-to-live for operations in milliseconds.
-        max_retries: Maximum number of retries on transient failures.
+        max_retries: Retries after the initial attempt on transient failures.
         token: Optional API token for authenticated endpoints.
     """
 
@@ -71,7 +79,7 @@ class AsyncElydoraClient:
         agent_id: str,
         private_key: str,
         *,
-        base_url: str = "https://api.elydora.com",
+        base_url: str = DEFAULT_BASE_URL,
         ttl_ms: int = 30000,
         max_retries: int = 3,
         token: Optional[str] = None,
@@ -83,17 +91,14 @@ class AsyncElydoraClient:
         self.ttl_ms = ttl_ms
         self.max_retries = require_max_retries(max_retries)
         self.token = token
-
         self._prev_chain_hash = GENESIS_CHAIN_HASH
-        self._kid = agent_id + '-key-1'
+        self._kid = agent_id + "-key-1"
         self._session: Optional[aiohttp.ClientSession] = None
 
     def set_kid(self, kid: str) -> None:
-        """Set the key ID used for signing operations."""
         self._kid = kid
 
     def set_prev_chain_hash(self, prev_chain_hash: str) -> None:
-        """Set the previous chain hash for the next operation."""
         self._prev_chain_hash = prev_chain_hash
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -102,19 +107,8 @@ class AsyncElydoraClient:
         return self._session
 
     async def close(self) -> None:
-        """Close the underlying HTTP session."""
         if self._session and not self._session.closed:
             await self._session.close()
-
-    # -----------------------------------------------------------------
-    # Internal HTTP helpers
-    # -----------------------------------------------------------------
-
-    def _headers(self) -> Dict[str, str]:
-        headers: Dict[str, str] = {"Content-Type": "application/json"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        return headers
 
     async def _request(
         self,
@@ -123,51 +117,43 @@ class AsyncElydoraClient:
         *,
         json_body: Any = None,
         params: Optional[Dict[str, str]] = None,
-        headers: Optional[Dict[str, str]] = None,
     ) -> Any:
-        url = f"{self.base_url}{path}"
-        hdrs = headers or self._headers()
-        session = await self._get_session()
-
         return await request_with_retries(
-            session,
+            await self._get_session(),
             method,
-            url,
+            f"{self.base_url}{path}",
             path=path,
             max_retries=self.max_retries,
             response_handler=self._handle_response,
             json_body=json_body,
             params=params,
-            headers=hdrs,
+            headers=build_headers(self.token),
         )
+
+    async def _get_public(self, path: str) -> Any:
+        session = await self._get_session()
+        async with session.get(f"{self.base_url}{path}", timeout=TIMEOUT) as response:
+            return await self._handle_response(response)
 
     @staticmethod
     async def _handle_response(resp: aiohttp.ClientResponse) -> Any:
         if resp.status >= 400:
             try:
                 body = await resp.json()
-            except Exception:
-                text = await resp.text()
-                raise ElydoraError(
-                    code="INTERNAL_ERROR",
-                    message=text or "Unknown error",
-                    status_code=resp.status,
-                )
-            err = body.get("error", {})
-            raise ElydoraError(
-                code=err.get("code", "INTERNAL_ERROR"),
-                message=err.get("message", ""),
-                request_id=err.get("request_id", ""),
-                details=err.get("details"),
-                status_code=resp.status,
-            )
+            except (aiohttp.ContentTypeError, ValueError):
+                body = None
+            raise error_from_response(resp.status, body, await resp.text())
         if resp.status == 204:
             return None
         return await resp.json()
 
-    # -----------------------------------------------------------------
-    # Auth (static methods)
-    # -----------------------------------------------------------------
+    @staticmethod
+    async def _post_json(url: str, body: Dict[str, Any]) -> Any:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=body, headers=build_headers(None), timeout=TIMEOUT
+            ) as response:
+                return await AsyncElydoraClient._handle_response(response)
 
     @staticmethod
     async def register(
@@ -177,112 +163,74 @@ class AsyncElydoraClient:
         display_name: Optional[str] = None,
         org_name: Optional[str] = None,
     ) -> AuthRegisterResponse:
-        """Register a new user and organization.
-
-        .. deprecated::
-            Use Better Auth endpoints directly. See docs.
-        """
+        """Deprecated password registration; Console users sign in through Better Auth."""
         warnings.warn(
-            "AsyncElydoraClient.register() is deprecated. Use Better Auth endpoints directly. See docs.",
+            "AsyncElydoraClient.register() is deprecated. Use Better Auth endpoints directly.",
             DeprecationWarning,
             stacklevel=2,
         )
         url = f"{base_url.rstrip('/')}/v1/auth/register"
-        body: Dict[str, Any] = {"email": email, "password": password}
-        if display_name is not None:
-            body["display_name"] = display_name
-        if org_name is not None:
-            body["org_name"] = org_name
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=body, headers={"Content-Type": "application/json"}, timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                return await AsyncElydoraClient._handle_response(resp)
+        return await AsyncElydoraClient._post_json(
+            url, register_body(email, password, display_name, org_name)
+        )
 
     @staticmethod
     async def login(base_url: str, email: str, password: str) -> AuthLoginResponse:
-        """Authenticate and receive a session token.
-
-        .. deprecated::
-            Use Better Auth endpoints directly. See docs.
-        """
+        """Deprecated password login; Console users sign in through Better Auth."""
         warnings.warn(
-            "AsyncElydoraClient.login() is deprecated. Use Better Auth endpoints directly. See docs.",
+            "AsyncElydoraClient.login() is deprecated. Use Better Auth endpoints directly.",
             DeprecationWarning,
             stacklevel=2,
         )
         url = f"{base_url.rstrip('/')}/v1/auth/login"
-        body = {"email": email, "password": password}
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=body, headers={"Content-Type": "application/json"}, timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                return await AsyncElydoraClient._handle_response(resp)
+        return await AsyncElydoraClient._post_json(url, {"email": email, "password": password})
 
     async def get_me(self) -> GetMeResponse:
-        """Get the current user's profile."""
         return await self._request("GET", "/v1/auth/me")
 
     async def issue_api_token(self, ttl_seconds: Optional[int] = None) -> IssueApiTokenResponse:
-        """Issue an API token with an optional TTL."""
-        body: Dict[str, Any] = {}
-        if ttl_seconds is not None:
-            body["ttl_seconds"] = ttl_seconds
-        return await self._request("POST", "/v1/auth/token", json_body=body)
-
-    async def issue_token(self, ttl_seconds: Optional[int] = None) -> IssueApiTokenResponse:
-        """Deprecated: Use issue_api_token() instead."""
-        return await self.issue_api_token(ttl_seconds=ttl_seconds)
+        return await self._request(
+            "POST", "/v1/auth/token", json_body=api_token_body(ttl_seconds)
+        )
 
     async def rotate_api_token(self) -> RotateApiTokenResponse:
-        """Rotate the current API token and keep the old token in 24h grace."""
         return await self._request("POST", "/v1/auth/rotate", json_body={})
 
-    # -----------------------------------------------------------------
-    # Agent management
-    # -----------------------------------------------------------------
-
     async def register_agent(self, request: RegisterAgentRequest) -> RegisterAgentResponse:
-        """Register a new agent with the organization."""
         require_integration_type(request.get("integration_type"))
         return await self._request("POST", "/v1/agents/register", json_body=request)
 
     async def get_agent(self, agent_id: str) -> GetAgentResponse:
-        """Retrieve agent details and keys."""
         return await self._request("GET", f"/v1/agents/{agent_id}")
 
-    async def freeze_agent(self, agent_id: str, reason: str) -> None:
-        """Freeze an agent."""
-        await self._request("POST", f"/v1/agents/{agent_id}/freeze", json_body={"reason": reason})
-
     async def list_agents(self) -> ListAgentsResponse:
-        """List all agents for the organization."""
         return await self._request("GET", "/v1/agents")
 
-    async def unfreeze_agent(self, agent_id: str, reason: str) -> UnfreezeAgentResponse:
-        """Unfreeze an agent."""
-        return await self._request("POST", f"/v1/agents/{agent_id}/unfreeze", json_body={"reason": reason})
+    async def freeze_agent(self, agent_id: str, reason: str) -> FreezeAgentResponse:
+        return await self._request(
+            "POST", f"/v1/agents/{agent_id}/freeze", json_body={"reason": reason}
+        )
 
-    async def update_agent(self, agent_id: str, integration_type: IntegrationType) -> UpdateAgentResponse:
-        """Update an agent's integration type."""
+    async def unfreeze_agent(self, agent_id: str, reason: str) -> UnfreezeAgentResponse:
+        return await self._request(
+            "POST", f"/v1/agents/{agent_id}/unfreeze", json_body={"reason": reason}
+        )
+
+    async def update_agent(
+        self, agent_id: str, integration_type: IntegrationType
+    ) -> UpdateAgentResponse:
         require_integration_type(integration_type)
-        return await self._request("PATCH", f"/v1/agents/{agent_id}", json_body={"integration_type": integration_type})
+        return await self._request(
+            "PATCH", f"/v1/agents/{agent_id}", json_body={"integration_type": integration_type}
+        )
 
     async def delete_agent(self, agent_id: str) -> DeleteAgentResponse:
-        """Delete an agent."""
         return await self._request("DELETE", f"/v1/agents/{agent_id}")
 
     async def revoke_key(self, agent_id: str, kid: str, reason: str) -> None:
-        """Revoke an agent's key."""
         await self._request(
-            "POST",
-            f"/v1/agents/{agent_id}/revoke",
-            json_body={"kid": kid, "reason": reason},
+            "POST", f"/v1/agents/{agent_id}/revoke", json_body={"kid": kid, "reason": reason}
         )
-
-    # -----------------------------------------------------------------
-    # Operations (CORE)
-    # -----------------------------------------------------------------
 
     def create_operation(
         self,
@@ -291,58 +239,32 @@ class AsyncElydoraClient:
         action: Dict[str, Any],
         payload: Union[Dict[str, Any], str, None] = None,
     ) -> EOR:
-        """Build and sign an Elydora Operation Record (EOR).
-
-        This is synchronous because it only performs local crypto operations.
-        Call submit_operation() with the returned EOR to submit it.
-        """
-        operation_id = generate_uuidv7()
-        issued_at = int(time.time() * 1000)
-        nonce = generate_nonce()
-        payload_hash = compute_payload_hash(payload)
-        chain_hash = compute_chain_hash(
-            self._prev_chain_hash, payload_hash, operation_id, issued_at
+        """Build and sign an EOR locally; submit it with submit_operation()."""
+        eor, chain_hash = build_eor(
+            org_id=self.org_id,
+            agent_id=self.agent_id,
+            private_key=self.private_key,
+            kid=self._kid,
+            ttl_ms=self.ttl_ms,
+            prev_chain_hash=self._prev_chain_hash,
+            operation_type=operation_type,
+            subject=subject,
+            action=action,
+            payload=payload,
         )
-
-        eor: Dict[str, Any] = {
-            "op_version": "1.0",
-            "operation_id": operation_id,
-            "org_id": self.org_id,
-            "agent_id": self.agent_id,
-            "issued_at": issued_at,
-            "ttl_ms": self.ttl_ms,
-            "nonce": nonce,
-            "operation_type": operation_type,
-            "subject": subject,
-            "action": action,
-            "payload": payload,
-            "payload_hash": payload_hash,
-            "prev_chain_hash": self._prev_chain_hash,
-            "agent_pubkey_kid": self._kid,
-            "signature": "",
-        }
-
-        eor["signature"] = sign_eor(eor, self.private_key)
-
         self._prev_chain_hash = chain_hash
-
-        return eor  # type: ignore[return-value]
+        return eor
 
     async def submit_operation(self, eor: EOR) -> SubmitOperationResponse:
-        """Submit a signed EOR to the server."""
         return await self._request("POST", "/v1/operations", json_body=eor)
 
     async def get_operation(self, operation_id: str) -> GetOperationResponse:
-        """Retrieve an operation by ID."""
         return await self._request("GET", f"/v1/operations/{operation_id}")
 
     async def verify_operation(self, operation_id: str) -> VerifyOperationResponse:
-        """Verify an operation's integrity."""
-        return await self._request("POST", f"/v1/operations/{operation_id}/verify", json_body={})
-
-    # -----------------------------------------------------------------
-    # Audit
-    # -----------------------------------------------------------------
+        return await self._request(
+            "POST", f"/v1/operations/{operation_id}/verify", json_body={}
+        )
 
     async def query_audit(
         self,
@@ -355,39 +277,22 @@ class AsyncElydoraClient:
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> AuditQueryResponse:
-        """Query the tamper-evident audit log."""
-        body: Dict[str, Any] = {}
-        if org_id is not None:
-            body["org_id"] = org_id
-        if agent_id is not None:
-            body["agent_id"] = agent_id
-        if operation_type is not None:
-            body["operation_type"] = operation_type
-        if start_time is not None:
-            body["start_time"] = start_time
-        if end_time is not None:
-            body["end_time"] = end_time
-        if cursor is not None:
-            body["cursor"] = cursor
-        if limit is not None:
-            body["limit"] = limit
+        body = without_none({
+            "org_id": org_id,
+            "agent_id": agent_id,
+            "operation_type": operation_type,
+            "start_time": start_time,
+            "end_time": end_time,
+            "cursor": cursor,
+            "limit": limit,
+        })
         return await self._request("POST", "/v1/audit/query", json_body=body)
 
-    # -----------------------------------------------------------------
-    # Epochs
-    # -----------------------------------------------------------------
-
     async def list_epochs(self) -> ListEpochsResponse:
-        """List all epochs for the organization."""
         return await self._request("GET", "/v1/epochs")
 
     async def get_epoch(self, epoch_id: str) -> GetEpochResponse:
-        """Retrieve an epoch root record."""
         return await self._request("GET", f"/v1/epochs/{epoch_id}")
-
-    # -----------------------------------------------------------------
-    # Exports
-    # -----------------------------------------------------------------
 
     async def create_export(
         self,
@@ -397,97 +302,51 @@ class AsyncElydoraClient:
         agent_id: Optional[str] = None,
         operation_type: Optional[str] = None,
     ) -> CreateExportResponse:
-        """Create a compliance export job."""
-        body: Dict[str, Any] = {
-            "start_time": start_time,
-            "end_time": end_time,
-            "format": format,
-        }
-        if agent_id is not None:
-            body["agent_id"] = agent_id
-        if operation_type is not None:
-            body["operation_type"] = operation_type
+        body = export_body(start_time, end_time, format, agent_id, operation_type)
         return await self._request("POST", "/v1/exports", json_body=body)
 
     async def list_exports(self) -> ListExportsResponse:
-        """List all exports for the organization."""
         return await self._request("GET", "/v1/exports")
 
     async def get_export(self, export_id: str) -> GetExportResponse:
-        """Retrieve export status and download URL."""
         return await self._request("GET", f"/v1/exports/{export_id}")
 
     async def download_export(self, export_id: str) -> bytes:
-        """Download an export file as raw bytes."""
-        url = f"{self.base_url}/v1/exports/{export_id}/download"
         session = await self._get_session()
         async with session.get(
-            url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)
-        ) as resp:
-            if resp.status >= 400:
-                await self._handle_response(resp)
-            return await resp.read()
-
-    # -----------------------------------------------------------------
-    # Webhooks
-    # -----------------------------------------------------------------
+            f"{self.base_url}/v1/exports/{export_id}/download",
+            headers=build_headers(self.token),
+            timeout=TIMEOUT,
+        ) as response:
+            if response.status >= 400:
+                await self._handle_response(response)
+            return await response.read()
 
     async def list_webhooks(self) -> ListWebhooksResponse:
-        """List all webhooks for the organization."""
         return await self._request("GET", "/v1/webhooks")
 
-    async def register_webhook(self, endpoint_url: str, events: list, secret: str) -> RegisterWebhookResponse:
-        """Register a new webhook."""
-        return await self._request("POST", "/v1/webhooks", json_body={"endpoint_url": endpoint_url, "events": events, "secret": secret})
+    async def register_webhook(
+        self, endpoint_url: str, events: List[str], secret: str
+    ) -> RegisterWebhookResponse:
+        body = {"endpoint_url": endpoint_url, "events": events, "secret": secret}
+        return await self._request("POST", "/v1/webhooks", json_body=body)
 
     async def delete_webhook(self, webhook_id: str) -> None:
-        """Delete a webhook."""
         await self._request("DELETE", f"/v1/webhooks/{webhook_id}")
 
-    # -----------------------------------------------------------------
-    # Members
-    # -----------------------------------------------------------------
-
     async def list_members(self) -> ListMembersResponse:
-        """List all members in the organization."""
         return await self._request("GET", "/v1/members")
 
-    # -----------------------------------------------------------------
-    # Admin events
-    # -----------------------------------------------------------------
-
     async def list_admin_events(self, limit: Optional[int] = None) -> ListAdminEventsResponse:
-        """List recent admin events."""
-        params: Dict[str, str] = {}
-        if limit is not None:
-            params["limit"] = str(limit)
-        return await self._request("GET", "/v1/admin/events", params=params)
-
-    # -----------------------------------------------------------------
-    # JWKS
-    # -----------------------------------------------------------------
+        return await self._request(
+            "GET", "/v1/admin/events", params=admin_events_params(limit)
+        )
 
     async def get_jwks(self) -> JWKSResponse:
-        """Retrieve the platform JWKS (public, no auth required)."""
-        url = f"{self.base_url}/.well-known/elydora/jwks.json"
-        session = await self._get_session()
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            return await self._handle_response(resp)
-
-    # -----------------------------------------------------------------
-    # Health
-    # -----------------------------------------------------------------
+        return await self._get_public("/.well-known/elydora/jwks.json")
 
     async def health(self) -> HealthResponse:
-        """Check API health (public, no auth required)."""
-        url = f"{self.base_url}/v1/health"
-        session = await self._get_session()
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            return await self._handle_response(resp)
+        return await self._get_public("/v1/health")
 
     async def deep_health(self) -> DeepHealthResponse:
-        """Check API deep health (public, no auth required)."""
-        url = f"{self.base_url}/v1/health/deep"
-        session = await self._get_session()
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            return await self._handle_response(resp)
+        return await self._get_public("/v1/health/deep")

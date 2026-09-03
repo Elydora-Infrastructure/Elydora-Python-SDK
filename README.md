@@ -168,7 +168,7 @@ auth = ElydoraClient.login(base_url, email, password)
 me = client.get_me()
 
 # Issue a new API token (with optional TTL in seconds)
-token_resp = client.issue_token(ttl_seconds=3600)
+token_resp = client.issue_api_token(ttl_seconds=3600)
 ```
 
 ### Operations
@@ -320,7 +320,7 @@ from elydora import (
     VerifyOperationResponse, AuditQueryResponse, GetEpochResponse,
     ListEpochsResponse, CreateExportResponse, GetExportResponse,
     ListExportsResponse, JWKSResponse, AuthRegisterResponse,
-    AuthLoginResponse, GetMeResponse, IssueTokenResponse, HealthResponse,
+    AuthLoginResponse, GetMeResponse, IssueApiTokenResponse, HealthResponse,
 
     # Request types
     RegisterAgentRequest,

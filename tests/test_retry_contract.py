@@ -215,7 +215,7 @@ def test_sync_client_does_not_replay_non_idempotent_requests(
     )
 
     with pytest.raises(ElydoraError) as error:
-        client.issue_token()
+        client.issue_api_token()
     assert error.value.status_code == 503
     assert scripted_server.methods == ["POST"]
     assert delays == []
@@ -241,7 +241,7 @@ async def test_async_client_does_not_replay_non_idempotent_requests(
     )
     try:
         with pytest.raises(ElydoraError) as error:
-            await client.issue_token()
+            await client.issue_api_token()
         assert error.value.status_code == 503
         assert scripted_server.methods == ["POST"]
         assert delays == []

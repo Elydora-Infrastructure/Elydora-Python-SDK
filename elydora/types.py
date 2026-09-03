@@ -1,7 +1,4 @@
-"""Type definitions matching the Elydora backend API contract.
-
-All types use TypedDict for structural typing, compatible with Python 3.10+.
-"""
+"""TypedDict definitions matching the Elydora Backend API contract."""
 
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,10 +8,6 @@ if sys.version_info >= (3, 11):
 else:
     from typing_extensions import Literal, NotRequired, TypedDict
 
-
-# ---------------------------------------------------------------------------
-# Enums (as Literal types)
-# ---------------------------------------------------------------------------
 
 AgentStatus = Literal["active", "frozen", "revoked"]
 KeyStatus = Literal["active", "retired", "revoked"]
@@ -53,22 +46,32 @@ INTEGRATION_TYPES: Tuple[IntegrationType, ...] = (
     "enterprise", "gui", "sdk", "other",
 )
 AdminAction = Literal[
+    "agent.register",
+    "agent.update",
     "agent.freeze",
     "agent.unfreeze",
-    "agent.revoke_key",
+    "agent.revoke",
     "agent.delete",
+    "key.revoke",
+    "export.create",
+    "org.create",
+    "org.update",
     "member.invite",
+    "invitation.cancel",
     "member.remove",
     "member.role_change",
+    "agent.assign",
+    "agent.unassign",
     "webhook.register",
     "webhook.delete",
-    "org.update",
 ]
 ErrorCode = Literal[
     "INVALID_SIGNATURE",
     "UNKNOWN_AGENT",
     "KEY_REVOKED",
+    "KEY_RETIRED",
     "AGENT_FROZEN",
+    "AGENT_REVOKED",
     "TTL_EXPIRED",
     "REPLAY_DETECTED",
     "PREV_HASH_MISMATCH",
@@ -80,11 +83,6 @@ ErrorCode = Literal[
     "NOT_FOUND",
     "VALIDATION_ERROR",
 ]
-
-# ---------------------------------------------------------------------------
-# Entity types
-# ---------------------------------------------------------------------------
-
 
 class Agent(TypedDict):
     agent_id: str
@@ -175,11 +173,6 @@ class Export(TypedDict):
     completed_at: Optional[int]
 
 
-# ---------------------------------------------------------------------------
-# Protocol types
-# ---------------------------------------------------------------------------
-
-
 class EOR(TypedDict):
     """Elydora Operation Record."""
     op_version: Literal["1.0"]
@@ -215,11 +208,6 @@ class EAR(TypedDict):
     elydora_signature: str
 
 
-# ---------------------------------------------------------------------------
-# API request types
-# ---------------------------------------------------------------------------
-
-
 class RegisterAgentKeyParam(TypedDict):
     kid: str
     public_key: str
@@ -232,21 +220,6 @@ class RegisterAgentRequest(TypedDict):
     keys: List[RegisterAgentKeyParam]
     display_name: NotRequired[str]
     responsible_entity: NotRequired[str]
-
-
-class AuditQueryParams(TypedDict, total=False):
-    org_id: str
-    agent_id: str
-    operation_type: str
-    start_time: int
-    end_time: int
-    cursor: str
-    limit: int
-
-
-# ---------------------------------------------------------------------------
-# API response types
-# ---------------------------------------------------------------------------
 
 
 class RegisterAgentResponse(TypedDict):
@@ -266,6 +239,7 @@ class SubmitOperationResponse(TypedDict):
 class GetOperationResponse(TypedDict, total=False):
     operation: Operation
     receipt: Receipt
+    payload: Any
 
 
 class VerifyChecks(TypedDict, total=False):
@@ -348,8 +322,27 @@ class DeleteAgentResponse(TypedDict):
     deleted: bool
 
 
+class AuthMeUser(TypedDict):
+    user_id: str
+    org_id: Optional[str]
+    email: str
+    display_name: str
+    role: RbacRole
+    status: Literal["active", "suspended"]
+    created_at: int
+    updated_at: int
+    onboarding_completed: bool
+
+
+class CurrentOrganization(TypedDict):
+    org_id: Optional[str]
+    ba_org_id: Optional[str]
+    role: RbacRole
+
+
 class GetMeResponse(TypedDict):
-    user: User
+    user: AuthMeUser
+    current_organization: CurrentOrganization
 
 
 class IssueApiTokenResponse(TypedDict):
@@ -364,39 +357,30 @@ class RotateApiTokenResponse(TypedDict):
     token_id: str
 
 
-# Backward compatibility aliases (deprecated)
-IssueTokenResponse = IssueApiTokenResponse
-RotateTokenResponse = RotateApiTokenResponse
-
-
 class HealthResponse(TypedDict):
     status: str
     version: str
     protocol_version: str
+    capabilities: Dict[str, str]
     timestamp: int
-
-
-# ---------------------------------------------------------------------------
-# Additional entity types
-# ---------------------------------------------------------------------------
 
 
 class AdminEvent(TypedDict):
     event_id: str
     org_id: str
-    actor_user_id: str
+    actor: str
     action: str
     target_type: str
     target_id: str
-    metadata: Optional[Dict[str, Any]]
+    details: Optional[str]
     created_at: int
 
 
 class AgentAssignment(TypedDict):
-    assignment_id: str
+    id: str
     agent_id: str
+    user_id: str
     org_id: str
-    assigned_to: str
     assigned_by: str
     created_at: int
 
@@ -406,32 +390,22 @@ class WebhookEntry(TypedDict):
     org_id: str
     endpoint_url: str
     events: List[str]
+    status: Literal["active", "disabled"]
     created_at: int
     updated_at: int
 
 
 class MemberEntry(TypedDict):
+    member_id: str
     user_id: str
-    org_id: str
+    role: str
+    joined_at: str
     email: str
     display_name: str
-    role: RbacRole
-    status: Literal["active", "suspended"]
-    created_at: int
-
-
-# ---------------------------------------------------------------------------
-# Additional request types
-# ---------------------------------------------------------------------------
 
 
 class UpdateAgentRequest(TypedDict):
     integration_type: IntegrationType
-
-
-# ---------------------------------------------------------------------------
-# Additional response types
-# ---------------------------------------------------------------------------
 
 
 class UpdateAgentResponse(TypedDict):
@@ -439,15 +413,13 @@ class UpdateAgentResponse(TypedDict):
 
 
 class FreezeAgentResponse(TypedDict):
-    agent_id: str
+    agent: Agent
     previous_status: AgentStatus
-    status: AgentStatus
 
 
 class UnfreezeAgentResponse(TypedDict):
-    agent_id: str
+    agent: Agent
     previous_status: AgentStatus
-    status: AgentStatus
 
 
 class ListWebhooksResponse(TypedDict):
@@ -464,12 +436,18 @@ class ListMembersResponse(TypedDict):
 
 class ListAdminEventsResponse(TypedDict):
     events: List[AdminEvent]
-    cursor: Optional[str]
 
 
-class DeepHealthResponse(TypedDict, total=False):
-    status: str
+class DependencyHealth(TypedDict):
+    status: Literal["ok", "failed"]
+    latency_ms: int
+    contract_phase: NotRequired[Literal["expand", "contract"]]
+
+
+class DeepHealthResponse(TypedDict):
+    status: Literal["healthy", "degraded"]
     version: str
     protocol_version: str
+    capabilities: Dict[str, str]
     timestamp: int
-    checks: Dict[str, Any]
+    dependencies: Dict[str, DependencyHealth]

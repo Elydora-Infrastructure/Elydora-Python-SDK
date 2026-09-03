@@ -1,23 +1,16 @@
-"""Cryptographic utilities: Ed25519 signing, SHA-256, chain hash, JCS canonicalization.
-
-Mirrors the backend implementation in ElydoraBackend/src/utils/crypto.ts exactly.
-"""
+"""Ed25519 signing, SHA-256, chain hash, and RFC 8785 canonicalization; mirrors the Backend."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import math
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Union
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .utils import base64url_decode, base64url_encode
-
-
-# ---------------------------------------------------------------------------
-# SHA-256
-# ---------------------------------------------------------------------------
 
 
 def sha256_base64url(data: Union[str, bytes]) -> str:
@@ -28,39 +21,21 @@ def sha256_base64url(data: Union[str, bytes]) -> str:
     return base64url_encode(digest)
 
 
-# ---------------------------------------------------------------------------
-# JCS Canonicalization (RFC 8785)
-# ---------------------------------------------------------------------------
-
-
 def _jcs_serialize_number(value: Union[int, float]) -> str:
-    """Serialize a number per JCS / ES2015 Number serialization rules."""
+    """ES2015 number serialization: NaN and infinities become null, -0.0 becomes 0."""
     if isinstance(value, bool):
-        # bool is a subclass of int in Python; handle before int check
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
-    # float
     if math.isnan(value) or math.isinf(value):
         return "null"
     if value == 0.0:
-        # Handle -0.0 -> "0"
         return "0"
-    # Use Python's repr which matches ES2015 for normal floats,
-    # but we need to ensure no trailing zeros beyond what's needed.
-    # json.dumps handles this correctly per the JSON spec.
     return json.dumps(value)
 
 
 def jcs_canonicalize(value: Any) -> str:
-    """Canonicalize a value according to JCS (RFC 8785).
-
-    - Object keys sorted lexicographically
-    - No whitespace
-    - Numbers serialized using ES2015 rules
-    - Strings serialized with minimal JSON escaping
-    - undefined values in objects are omitted
-    """
+    """Canonicalize a value according to JCS (RFC 8785)."""
     if value is None:
         return "null"
 
@@ -78,22 +53,13 @@ def jcs_canonicalize(value: Any) -> str:
         return "[" + ",".join(elements) + "]"
 
     if isinstance(value, dict):
-        keys = sorted(value.keys())
-        pairs = []
-        for key in keys:
-            v = value[key]
-            if v is not None or key in value:
-                # Include keys with None values (maps to JSON null),
-                # but skip keys that don't exist (which won't happen with dict iteration)
-                pairs.append(json.dumps(key, ensure_ascii=False) + ":" + jcs_canonicalize(v))
+        pairs = [
+            json.dumps(key, ensure_ascii=False) + ":" + jcs_canonicalize(value[key])
+            for key in sorted(value.keys())
+        ]
         return "{" + ",".join(pairs) + "}"
 
     return json.dumps(value)
-
-
-# ---------------------------------------------------------------------------
-# Payload hash
-# ---------------------------------------------------------------------------
 
 
 def compute_payload_hash(payload: Any) -> str:
@@ -102,36 +68,19 @@ def compute_payload_hash(payload: Any) -> str:
     return sha256_base64url(canonical)
 
 
-# ---------------------------------------------------------------------------
-# Chain hash
-# ---------------------------------------------------------------------------
-
-
 def compute_chain_hash(
     prev_chain_hash: str,
     payload_hash: str,
     operation_id: str,
     issued_at: int,
 ) -> str:
-    """Compute chain hash: SHA-256(prev|payload_hash|op_id|issued_at) as base64url.
-
-    Matches the backend formula exactly:
-      chain_hash = SHA-256(prev_chain_hash + "|" + payload_hash + "|" + operation_id + "|" + str(issued_at))
-    """
+    """SHA-256 of "prev|payload_hash|operation_id|issued_at" as base64url."""
     input_str = f"{prev_chain_hash}|{payload_hash}|{operation_id}|{issued_at}"
     return sha256_base64url(input_str)
 
 
-# ---------------------------------------------------------------------------
-# Ed25519 signing
-# ---------------------------------------------------------------------------
-
-
 def sign_ed25519(private_key_base64url: str, data: bytes) -> str:
-    """Sign data with Ed25519 private key (32-byte seed, base64url encoded).
-
-    Returns a base64url-encoded 64-byte signature.
-    """
+    """Sign data with a base64url 32-byte Ed25519 seed; returns a base64url signature."""
     seed = base64url_decode(private_key_base64url)
     key = Ed25519PrivateKey.from_private_bytes(seed)
     signature = key.sign(data)
@@ -139,29 +88,14 @@ def sign_ed25519(private_key_base64url: str, data: bytes) -> str:
 
 
 def get_public_key_base64url(private_key_base64url: str) -> str:
-    """Derive the Ed25519 public key from the private key seed.
-
-    Returns base64url-encoded 32-byte public key.
-    """
+    """Derive the base64url Ed25519 public key from a base64url seed."""
     seed = base64url_decode(private_key_base64url)
-    key = Ed25519PrivateKey.from_private_bytes(seed)
-    pub = key.public_key()
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-    raw_bytes = pub.public_bytes(Encoding.Raw, PublicFormat.Raw)
-    return base64url_encode(raw_bytes)
-
-
-# ---------------------------------------------------------------------------
-# EOR signing
-# ---------------------------------------------------------------------------
+    public_key = Ed25519PrivateKey.from_private_bytes(seed).public_key()
+    return base64url_encode(public_key.public_bytes(Encoding.Raw, PublicFormat.Raw))
 
 
 def sign_eor(eor_dict: Dict[str, Any], private_key_base64url: str) -> str:
-    """Sign an EOR by canonicalizing all fields except 'signature', then signing.
-
-    Returns the base64url-encoded Ed25519 signature.
-    """
-    # Build the signable object: all EOR fields except 'signature'
+    """Sign the JCS form of every EOR field except signature."""
     signable = {k: v for k, v in eor_dict.items() if k != "signature"}
     canonical = jcs_canonicalize(signable)
     return sign_ed25519(private_key_base64url, canonical.encode("utf-8"))

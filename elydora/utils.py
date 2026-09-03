@@ -28,27 +28,12 @@ def generate_nonce() -> str:
 
 
 def generate_uuidv7() -> str:
-    """Generate a UUIDv7 (time-ordered, random) as a string.
-
-    Layout (RFC 9562):
-      - 48-bit Unix timestamp in milliseconds
-      - 4-bit version (0b0111)
-      - 12-bit random
-      - 2-bit variant (0b10)
-      - 62-bit random
-    """
+    """UUIDv7 (RFC 9562): 48-bit ms timestamp, version 7, variant 10, 74 random bits."""
     timestamp_ms = int(time.time() * 1000)
-
-    # 48-bit timestamp
-    ts_bytes = struct.pack(">Q", timestamp_ms)[2:]  # last 6 bytes of 8-byte big-endian
-
-    # 2 bytes: version (4 bits = 0x7) + 12 random bits
-    rand_a = struct.unpack(">H", os.urandom(2))[0]
-    rand_a = (rand_a & 0x0FFF) | 0x7000  # set version nibble
-
-    # 8 bytes: variant (2 bits = 0b10) + 62 random bits
+    ts_bytes = struct.pack(">Q", timestamp_ms)[2:]
+    rand_a = (struct.unpack(">H", os.urandom(2))[0] & 0x0FFF) | 0x7000
     rand_b = bytearray(os.urandom(8))
-    rand_b[0] = (rand_b[0] & 0x3F) | 0x80  # set variant bits
+    rand_b[0] = (rand_b[0] & 0x3F) | 0x80
 
     uuid_bytes = ts_bytes + struct.pack(">H", rand_a) + bytes(rand_b)
 

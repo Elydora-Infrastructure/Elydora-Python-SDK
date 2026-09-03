@@ -1,8 +1,4 @@
-"""Elydora CLI — install, uninstall, and manage agent audit hooks.
-
-Entry point: ``elydora`` console script (see pyproject.toml).
-Uses only stdlib argparse — zero external dependencies for the CLI itself.
-"""
+"""Elydora CLI: install, uninstall, and inspect agent audit hooks."""
 
 from __future__ import annotations
 
@@ -173,17 +169,15 @@ def _discover_installed_agents_or_exit() -> list[_InstalledAgent]:
 
 
 def _get_plugin(agent_name: str) -> AgentPlugin:
-    """Instantiate the plugin for the given agent name."""
     cls = PLUGIN_MAP.get(agent_name)
     if cls is None:
-        print(f"Error: Unknown agent '{agent_name}'.", file=sys.stderr)
-        print(f"Supported agents: {', '.join(get_agent_names())}", file=sys.stderr)
-        sys.exit(1)
+        _exit_with_error(
+            f"Unknown agent {agent_name!r}. Supported agents: {', '.join(get_agent_names())}"
+        )
     return cls()
 
 
 def cmd_install(args: argparse.Namespace) -> None:
-    """Handle the 'install' subcommand."""
     recover_pending_transactions()
     agent_name: str = args.agent
     agent_dir = _resolve_agent_directory_or_exit(args.agent_id)
@@ -197,12 +191,10 @@ def cmd_install(args: argparse.Namespace) -> None:
     except (OSError, RuntimeError, ValueError) as error:
         _exit_with_error(str(error))
 
-    # Derive public key to verify the private key is valid
     try:
         pub = get_public_key_base64url(secrets.private_key)
     except Exception as exc:
-        print(f"Error: Invalid private key — {exc}", file=sys.stderr)
-        sys.exit(1)
+        _exit_with_error(f"Invalid private key: {exc}")
 
     print(f"Verified key pair (public key: {pub[:16]}...)")
 
@@ -220,12 +212,10 @@ def cmd_install(args: argparse.Namespace) -> None:
         config["token"] = secrets.token
     plugin.preflight_install(config)
 
-    # Transactional adapters create and recover their own runtime directories.
     if not getattr(plugin, "manages_runtime_directories", False):
         ensure_private_directory(runtime_root())
         ensure_private_directory(agent_dir)
 
-    # Generate and write the guard script for adapters that use the shared runtime.
     if not plugin.manages_guard_runtime:
         guard_script = generate_guard_script(agent_name, args.agent_id)
         write_text_atomic(
@@ -240,7 +230,6 @@ def cmd_install(args: argparse.Namespace) -> None:
 
 
 def cmd_uninstall(args: argparse.Namespace) -> None:
-    """Handle the 'uninstall' subcommand."""
     recover_pending_transactions()
     explicit_agent_id = getattr(args, "agent_id", None)
     elydora_dir = runtime_root()
@@ -296,7 +285,6 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    """Handle the 'status' subcommand."""
     recover_pending_transactions()
     print("Elydora Agent Hook Status")
     print("=" * 40)
@@ -309,7 +297,6 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 
 def cmd_agents(args: argparse.Namespace) -> None:
-    """Handle the 'agents' subcommand."""
     print("Supported agents:")
     for name in get_agent_names():
         info = SUPPORTED_AGENTS[name]
@@ -317,7 +304,6 @@ def cmd_agents(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the argparse parser."""
     parser = argparse.ArgumentParser(
         prog="elydora",
         description="Elydora — tamper-evident audit trail for AI agents",
@@ -328,7 +314,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # install
     install_parser = subparsers.add_parser("install", help="Install audit hook for an agent")
     install_parser.add_argument("--agent", required=True, help="Agent name (e.g. claudecode, cursor)")
     install_parser.add_argument("--org_id", required=True, help="Organization ID")
@@ -346,22 +331,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     install_parser.add_argument("--base_url", default="https://api.elydora.com", help="API base URL")
 
-    # uninstall
     uninstall_parser = subparsers.add_parser("uninstall", help="Uninstall audit hook for an agent")
     uninstall_parser.add_argument("--agent", required=True, help="Agent name")
     uninstall_parser.add_argument("--agent_id", default=None, help="Agent ID (if omitted, scans config files for matching agent name)")
 
-    # status
     subparsers.add_parser("status", help="Show installation status of all agents")
 
-    # agents
     subparsers.add_parser("agents", help="List supported agents")
 
     return parser
 
 
 def main() -> None:
-    """CLI entry point."""
     _reject_legacy_secret_arguments(sys.argv[1:])
     parser = build_parser()
     args = parser.parse_args()
