@@ -46,6 +46,26 @@ def same_snapshot(
     return current == expected
 
 
+def read_target(staged: StagedChange) -> Optional[FileSnapshot]:
+    return staged.directory.read_file(
+        staged.directory.name_for(staged.change.file_path),
+        staged.change.label,
+        staged.change.maximum_bytes,
+    )
+
+
+def same_identity_and_contents(
+    current: Optional[FileSnapshot], expected: Optional[FileSnapshot]
+) -> bool:
+    if current is None or expected is None:
+        return current is expected
+    return (
+        current.contents == expected.contents
+        and current.device == expected.device
+        and current.inode == expected.inode
+    )
+
+
 def remove_optional(directory: PinnedDirectory, file_path: Optional[str]) -> None:
     if not file_path:
         return
@@ -338,8 +358,7 @@ def _remove_exact_text(
         != (expected.device, expected.inode)
     )
     if not changed:
-        # An in-place rewrite keeps the inode, so the removal is only exact
-        # once the bytes also match the owned snapshot.
+        # An in-place rewrite keeps the inode; bytes must match too.
         try:
             snapshot = captured.text_snapshot(
                 len(expected.contents.encode("utf-8"))

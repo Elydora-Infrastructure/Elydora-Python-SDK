@@ -10,8 +10,7 @@ from typing import Any, Optional, Tuple
 from ._managed_files import (
     DirectorySnapshot,
     FileSnapshot,
-    _same_file_metadata,
-    assert_content_stable,
+    read_file_snapshot,
     read_physical_directory,
 )
 
@@ -381,8 +380,7 @@ class PinnedDirectory:
         """Persist directory entries where the host exposes directory fsync."""
         self._require_open()
         if os.name == "nt":
-            # NTFS journals atomic rename metadata. Windows directory handles do
-            # not support FlushFileBuffers, while every staged file is flushed.
+            # Windows directory handles do not support FlushFileBuffers.
             return
         if os.name != "posix":
             raise OSError(f"Unsupported transaction platform: {os.name}")
@@ -410,71 +408,21 @@ class PinnedDirectory:
         label: str,
         maximum_bytes: int,
     ) -> Optional[FileSnapshot]:
+        file_path = self.path_for(name)
         try:
             before = self.stat_file(name)
         except FileNotFoundError:
             return None
         except OSError as error:
-            raise OSError(f"Inspect {label} at {self.path_for(name)}: {error}") from error
+            raise OSError(f"Inspect {label} at {file_path}: {error}") from error
         if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
-            raise OSError(f"{label} path is not a physical file: {self.path_for(name)}")
-        if before.st_size > maximum_bytes:
-            raise ValueError(
-                f"{label} exceeds {maximum_bytes} bytes: {self.path_for(name)}"
-            )
-
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = -1
-        try:
-            descriptor = self.open_file(name, flags)
-            opened = os.fstat(descriptor)
-            if not stat.S_ISREG(opened.st_mode) or not _same_file_metadata(
-                before,
-                opened,
-            ):
-                raise OSError(f"{label} changed while opening: {self.path_for(name)}")
-            if opened.st_size > maximum_bytes:
-                raise ValueError(
-                    f"{label} exceeds {maximum_bytes} bytes: {self.path_for(name)}"
-                )
-            with os.fdopen(descriptor, "rb") as file:
-                descriptor = -1
-                raw = file.read(maximum_bytes + 1)
-                finished = os.fstat(file.fileno())
-            if not _same_file_metadata(finished, opened):
-                raise OSError(
-                    f"{label} changed while reading: {self.path_for(name)}"
-                )
-            assert_content_stable(
-                lambda: self.open_file(name, flags),
-                self.path_for(name),
-                label,
-                opened,
-                raw,
-                maximum_bytes,
-            )
-        except OSError as error:
-            raise OSError(f"Read {label} at {self.path_for(name)}: {error}") from error
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-
-        if len(raw) > maximum_bytes:
-            raise ValueError(
-                f"{label} exceeds {maximum_bytes} bytes: {self.path_for(name)}"
-            )
-        try:
-            contents = raw.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise ValueError(
-                f"{label} at {self.path_for(name)} must contain UTF-8 text"
-            ) from error
-        return FileSnapshot(
-            contents,
-            opened.st_dev,
-            opened.st_ino,
-            stat.S_IMODE(opened.st_mode),
+            raise OSError(f"{label} path is not a physical file: {file_path}")
+        return read_file_snapshot(
+            before,
+            lambda flags: self.open_file(name, flags),
+            file_path,
+            label,
+            maximum_bytes,
         )
 
     def chmod_file(

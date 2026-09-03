@@ -36,7 +36,8 @@ from .cursor_io import (
     validate_runtime_identity,
     write_cursor_changes,
 )
-from .hook_template import generate_guard_script, generate_hook_script
+from .guard_template import generate_guard_script
+from .hook_template import generate_hook_script
 
 
 def _runtime_config(config: InstallConfig, agent_id: str) -> dict:

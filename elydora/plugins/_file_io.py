@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 JsonObject = Dict[str, Any]
@@ -64,46 +63,3 @@ def write_text_atomic(path: str, content: str, mode: int, label: str) -> None:
 
 def write_json_atomic(path: str, value: JsonObject, mode: int, label: str) -> None:
     write_text_atomic(path, json.dumps(value, indent=2) + "\n", mode, label)
-
-
-def remove_file(path: str, label: str) -> None:
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        return
-    except OSError as error:
-        raise OSError(f"Remove {label} at {path}: {error}") from error
-
-
-def regular_file_exists(path: str, label: str) -> bool:
-    try:
-        metadata = os.stat(path)
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise OSError(f"Read {label} at {path}: {error}") from error
-    return stat.S_ISREG(metadata.st_mode)
-
-
-def require_runtime(path: str, label: str) -> None:
-    if not path:
-        raise ValueError(f"{label} path is required")
-    if not regular_file_exists(path, label):
-        raise FileNotFoundError(f"{label} is missing: {path}")
-
-
-def read_json(path: str, label: str) -> Optional[JsonObject]:
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            raw = file.read()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise OSError(f"Read {label} at {path}: {error}") from error
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as error:
-        raise ValueError(f"Failed to parse {label} at {path}: {error}") from error
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} at {path} must contain a JSON object")
-    return value

@@ -5,10 +5,7 @@ from __future__ import annotations
 import sys
 
 from .error_log_template import ERROR_LOG_RUNTIME
-from .guard_template import generate_guard_script
 from .runtime_reader_template import PROTECTED_RUNTIME_READER
-
-__all__ = ["generate_guard_script", "generate_hook_script"]
 
 
 def generate_hook_script(

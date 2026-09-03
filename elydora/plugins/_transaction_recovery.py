@@ -9,19 +9,11 @@ from uuid import uuid4
 from ._managed_files import FileSnapshot
 from ._pinned_directory import PinnedDirectory
 from ._private_artifact import QuarantinedFile, reserve_private_path
-from ._transaction_staging import same_snapshot
+from ._transaction_staging import read_target, same_snapshot
 from ._transaction_types import StagedChange
 
 
 ReplaceFile = Callable[[str, str, PinnedDirectory], None]
-
-
-def _read_target(staged: StagedChange) -> Optional[FileSnapshot]:
-    return staged.directory.read_file(
-        staged.directory.name_for(staged.change.file_path),
-        staged.change.label,
-        staged.change.maximum_bytes,
-    )
 
 
 def _read_private_path(
@@ -33,18 +25,6 @@ def _read_private_path(
         staged.directory.name_for(file_path),
         label,
         staged.change.maximum_bytes,
-    )
-
-
-def _same_identity_and_contents(
-    current: Optional[FileSnapshot], expected: Optional[FileSnapshot]
-) -> bool:
-    if current is None or expected is None:
-        return current is expected
-    return (
-        current.contents == expected.contents
-        and current.device == expected.device
-        and current.inode == expected.inode
     )
 
 
@@ -61,76 +41,6 @@ def _recovery_path(staged: StagedChange) -> tuple[str, FileSnapshot]:
 
 def _preserve_private_path(error: Exception, file_path: str) -> OSError:
     return OSError(f"{error}; transaction data preserved at {file_path}")
-
-
-def _release_rollback_source(staged: StagedChange, source_path: str) -> bool:
-    if staged.rollback_path is not None and os.path.normcase(
-        os.path.abspath(staged.rollback_path)
-    ) == os.path.normcase(os.path.abspath(source_path)):
-        staged.rollback_path = None
-        return True
-    return False
-
-
-def _preserve_source_path(
-    error: Exception,
-    file_path: str,
-    original_source: bool,
-) -> OSError:
-    kind = "original content" if original_source else "transaction data"
-    return OSError(f"{error}; {kind} preserved at {file_path}")
-
-
-def install_private_file(
-    staged: StagedChange,
-    source_path: str,
-    expected: FileSnapshot,
-    replace_file: ReplaceFile,
-) -> None:
-    try:
-        replace_file(source_path, staged.change.file_path, staged.directory)
-    except Exception:
-        raise
-    captured = QuarantinedFile.capture(
-        staged.directory,
-        source_path,
-        f"{staged.change.label} recovery source",
-    )
-    original_source = _release_rollback_source(staged, source_path)
-    captured_snapshot = captured.text_snapshot(staged.change.maximum_bytes)
-    if not same_snapshot(captured_snapshot, expected):
-        try:
-            captured.restore(source_path)
-        except Exception as error:
-            preserved = captured.preserve() if captured.active else source_path
-            raise OSError(
-                f"{error}; concurrent data preserved at {preserved}"
-            ) from error
-        raise OSError(
-            f"{staged.change.label} recovery source changed: {source_path}; "
-            f"concurrent data preserved at {source_path}"
-        )
-    try:
-        captured.link(staged.change.file_path)
-    except Exception as error:
-        preserved = captured.preserve() if captured.active else source_path
-        raise _preserve_source_path(
-            error,
-            preserved,
-            original_source,
-        ) from error
-    restored = _read_target(staged)
-    if not same_snapshot(restored, expected):
-        preserved = captured.preserve()
-        raise _preserve_source_path(
-            OSError(
-                f"{staged.change.label} changed while installing recovery data: "
-                f"{staged.change.file_path}"
-            ),
-            preserved,
-            original_source,
-        )
-    captured.discard()
 
 
 def capture_recovery_target(
@@ -263,7 +173,7 @@ def remove_committed_creation(
         replace_file,
         capture_file,
     )
-    if _read_target(staged) is not None:
+    if read_target(staged) is not None:
         discard_private_file(staged, recovery_path, recovery_snapshot)
         raise OSError(
             f"{staged.change.label} changed after recovery capture: "
@@ -275,6 +185,5 @@ def remove_committed_creation(
 __all__ = [
     "capture_recovery_target",
     "discard_private_file",
-    "install_private_file",
     "remove_committed_creation",
 ]

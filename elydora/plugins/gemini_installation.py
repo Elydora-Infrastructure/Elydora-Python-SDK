@@ -26,7 +26,8 @@ from .gemini_io import (
     validate_private_key,
     validate_runtime_tree,
 )
-from .hook_template import generate_guard_script, generate_hook_script
+from .guard_template import generate_guard_script
+from .hook_template import generate_hook_script
 
 
 @dataclass(frozen=True)

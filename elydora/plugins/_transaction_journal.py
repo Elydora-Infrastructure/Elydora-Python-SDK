@@ -13,7 +13,7 @@ from uuid import uuid4
 from ._managed_files import (
     DirectorySnapshot,
     FileSnapshot,
-    _same_file_metadata,
+    same_file_metadata,
     identity_mode_bits,
 )
 from ._opaque_snapshot import OpaqueFileSnapshot
@@ -300,7 +300,7 @@ def inspect_fingerprint(
     descriptor = directory.open_file(name, flags)
     try:
         opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or not _same_file_metadata(before, opened):
+        if not stat.S_ISREG(opened.st_mode) or not same_file_metadata(before, opened):
             raise OSError(f"{label} changed while opening: {file_path}")
         digest = hashlib.sha256()
         size = 0
@@ -311,12 +311,12 @@ def inspect_fingerprint(
             digest.update(chunk)
             size += len(chunk)
         finished = os.fstat(descriptor)
-        if not _same_file_metadata(finished, opened):
+        if not same_file_metadata(finished, opened):
             raise OSError(f"{label} changed while hashing: {file_path}")
     finally:
         os.close(descriptor)
     visible = directory.stat_file(name)
-    if not _same_file_metadata(visible, finished):
+    if not same_file_metadata(visible, finished):
         raise OSError(f"{label} changed while hashing: {file_path}")
     return FileFingerprint(
         digest.hexdigest(),
@@ -419,7 +419,7 @@ def load_journal() -> Optional[TransactionJournal]:
     descriptor = os.open(path, flags)
     try:
         opened = os.fstat(descriptor)
-        if not _same_file_metadata(opened, metadata):
+        if not same_file_metadata(opened, metadata):
             raise OSError(f"Transaction journal changed while opening: {path}")
         chunks = []
         remaining = MAX_JOURNAL_BYTES + 1
@@ -431,7 +431,7 @@ def load_journal() -> Optional[TransactionJournal]:
             remaining -= len(chunk)
         raw = b"".join(chunks)
         finished = os.fstat(descriptor)
-        if not _same_file_metadata(finished, opened):
+        if not same_file_metadata(finished, opened):
             raise OSError(f"Transaction journal changed while reading: {path}")
     finally:
         os.close(descriptor)
@@ -439,7 +439,7 @@ def load_journal() -> Optional[TransactionJournal]:
         visible = os.lstat(path)
     except FileNotFoundError as error:
         raise OSError(f"Transaction journal changed while reading: {path}") from error
-    if not _same_file_metadata(visible, finished):
+    if not same_file_metadata(visible, finished):
         raise OSError(f"Transaction journal changed while reading: {path}")
     if len(raw) > MAX_JOURNAL_BYTES:
         raise ValueError("Transaction journal exceeds its size limit")

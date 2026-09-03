@@ -8,7 +8,7 @@ import os
 import stat
 from typing import Optional
 
-from ._managed_files import portable_file_mode
+from ._managed_files import same_file_metadata
 from ._pinned_directory import PinnedDirectory
 
 
@@ -17,31 +17,13 @@ _HASH_CHUNK_BYTES = 1024 * 1024
 
 @dataclass(frozen=True)
 class OpaqueFileSnapshot:
-    """Content and physical identity without retaining file bytes in memory.
-
-    Identity is content-based (device, inode, mode, size, SHA-256). File
-    timestamps are excluded because Windows exposes them with delayed
-    visibility across handles, which makes them unsound identity evidence.
-    """
+    """Device, inode, mode, size, and SHA-256 without retaining the bytes."""
 
     device: int
     inode: int
     mode: int
     size: int
     sha256: str
-
-
-def _metadata(metadata: os.stat_result) -> tuple[int, int, int, int]:
-    return (
-        metadata.st_dev,
-        metadata.st_ino,
-        portable_file_mode(metadata),
-        metadata.st_size,
-    )
-
-
-def _same_metadata(first: os.stat_result, second: os.stat_result) -> bool:
-    return _metadata(first) == _metadata(second)
 
 
 def _require_regular(
@@ -82,7 +64,7 @@ def stream_opaque_snapshot(
         descriptor = directory.open_file(name, flags)
         opened = os.fstat(descriptor)
         _require_regular(opened, file_path, label, require_owner_only)
-        if not _same_metadata(opened, before):
+        if not same_file_metadata(opened, before):
             raise OSError(f"{label} changed while opening: {file_path}")
         digest = hashlib.sha256()
         while True:
@@ -92,7 +74,7 @@ def stream_opaque_snapshot(
             digest.update(chunk)
         finished = os.fstat(descriptor)
         _require_regular(finished, file_path, label, require_owner_only)
-        if not _same_metadata(finished, opened):
+        if not same_file_metadata(finished, opened):
             raise OSError(f"{label} changed while hashing: {file_path}")
     except OSError as error:
         raise OSError(f"Read {label} at {file_path}: {error}") from error
@@ -105,7 +87,7 @@ def stream_opaque_snapshot(
     except FileNotFoundError as error:
         raise OSError(f"{label} changed while hashing: {file_path}") from error
     _require_regular(visible, file_path, label, require_owner_only)
-    if not _same_metadata(visible, finished):
+    if not same_file_metadata(visible, finished):
         raise OSError(f"{label} changed while hashing: {file_path}")
     return OpaqueFileSnapshot(
         finished.st_dev,

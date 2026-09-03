@@ -13,6 +13,8 @@ from ._transaction_recovery import remove_committed_creation
 from ._transaction_staging import (
     assert_transaction_preconditions,
     assert_unchanged,
+    read_target,
+    same_identity_and_contents,
     same_snapshot,
 )
 from ._transaction_types import FileChange, StagedChange
@@ -38,14 +40,6 @@ def _original_snapshot(change: FileChange) -> Optional[FileSnapshot]:
     )
 
 
-def _read_target(staged: StagedChange) -> Optional[FileSnapshot]:
-    return staged.directory.read_file(
-        staged.directory.name_for(staged.change.file_path),
-        staged.change.label,
-        staged.change.maximum_bytes,
-    )
-
-
 def _read_temporary(staged: StagedChange) -> Optional[FileSnapshot]:
     if staged.temporary_path is None:
         return None
@@ -63,18 +57,6 @@ def _read_rollback(staged: StagedChange) -> Optional[FileSnapshot]:
         staged.directory.name_for(staged.rollback_path),
         f"{staged.change.label} rollback",
         staged.change.maximum_bytes,
-    )
-
-
-def _same_identity_and_contents(
-    current: Optional[FileSnapshot], expected: Optional[FileSnapshot]
-) -> bool:
-    if current is None or expected is None:
-        return current is expected
-    return (
-        current.contents == expected.contents
-        and current.device == expected.device
-        and current.inode == expected.inode
     )
 
 
@@ -97,7 +79,7 @@ def prepare_change(staged: StagedChange, capture_file: ReplaceFile) -> None:
         raise OSError(f"Missing rollback reservation for {staged.change.label}")
     capture_file(staged.change.file_path, rollback_path, staged.directory)
     assert_transaction_preconditions(*staged.preconditions, staged.directories)
-    current = _read_target(staged)
+    current = read_target(staged)
     if not same_snapshot(current, original):
         raise OSError(
             f"{staged.change.label} changed at commit boundary: "
@@ -119,7 +101,7 @@ def prepare_change(staged: StagedChange, capture_file: ReplaceFile) -> None:
         staged.change.label,
         staged.change.maximum_bytes,
     )
-    current = _read_target(staged)
+    current = read_target(staged)
     if not same_snapshot(current, original):
         raise OSError(
             f"{staged.change.label} changed while preparing rollback: "
@@ -151,7 +133,7 @@ def _replace_next(
         raise OSError(f"Missing staged file for {staged.change.label}")
     replace_file(temporary_path, staged.change.file_path, staged.directory)
     assert_transaction_preconditions(*staged.preconditions, staged.directories)
-    current = _read_target(staged)
+    current = read_target(staged)
     expected = _original_snapshot(staged.change)
     if not same_snapshot(current, expected):
         error = OSError(
@@ -227,7 +209,7 @@ def commit_change(
     else:
         _replace_next(staged, replace_file, after_replace)
 
-    current = _read_target(staged)
+    current = read_target(staged)
     if not same_snapshot(current, staged.committed_snapshot):
         raise OSError(
             f"{staged.change.label} changed immediately after commit: "
@@ -251,7 +233,7 @@ def _restore_rollback_file(
     rollback = staged.rollback_snapshot
     if rollback_path is None or rollback is None:
         raise OSError(f"Missing rollback path for {staged.change.label}")
-    if not same_snapshot(_read_target(staged), expected_current):
+    if not same_snapshot(read_target(staged), expected_current):
         raise _preserve_rollback(
             staged,
             OSError(
@@ -263,7 +245,7 @@ def _restore_rollback_file(
         restore_file(rollback_path, staged.change.file_path, staged.directory)
     except Exception as error:
         raise _preserve_rollback(staged, error) from error
-    if not same_snapshot(_read_target(staged), expected_current):
+    if not same_snapshot(read_target(staged), expected_current):
         raise _preserve_rollback(
             staged,
             OSError(
@@ -272,7 +254,7 @@ def _restore_rollback_file(
             ),
         )
     current_rollback = _read_rollback(staged)
-    if not _same_identity_and_contents(current_rollback, rollback):
+    if not same_identity_and_contents(current_rollback, rollback):
         raise _preserve_rollback(
             staged,
             OSError(
@@ -288,7 +270,7 @@ def _restore_rollback_file(
         )
     atomic_replace(staged.directory, rollback_path, staged.change.file_path)
     staged.rollback_path = None
-    restored = _read_target(staged)
+    restored = read_target(staged)
     if (
         restored is None
         or restored.contents != expected.contents
@@ -307,7 +289,7 @@ def rollback_change(
 ) -> None:
     if not staged.committed:
         return
-    current = _read_target(staged)
+    current = read_target(staged)
     if not same_snapshot(current, staged.committed_snapshot):
         raise _preserve_rollback(
             staged,

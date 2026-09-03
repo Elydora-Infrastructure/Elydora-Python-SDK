@@ -6,6 +6,7 @@ import os
 import stat
 from typing import Any, Optional, Tuple
 
+from ._managed_files import same_file_metadata
 from ._pinned_directory import PinnedDirectory
 
 
@@ -25,16 +26,6 @@ def _regular_identity(
         or (metadata.st_dev, metadata.st_ino) != expected
     ):
         raise OSError(f"{label} changed while copying: {path}")
-
-
-def _stable_metadata(metadata: os.stat_result) -> tuple[int, int, int]:
-    # Timestamps are excluded: Windows exposes file times with delayed
-    # cross-handle visibility, so they are unsound identity evidence.
-    return (
-        metadata.st_dev,
-        metadata.st_ino,
-        metadata.st_size,
-    )
 
 
 def copy_into_reserved(
@@ -88,7 +79,7 @@ def copy_into_reserved(
         directory.chmod_descriptor(destination_descriptor, mode)
         os.fsync(destination_descriptor)
         after = os.fstat(source_descriptor)
-        if _stable_metadata(after) != _stable_metadata(before):
+        if not same_file_metadata(after, before):
             raise OSError(f"{label} changed while copying: {source_path}")
     finally:
         for descriptor in (destination_descriptor, source_descriptor):

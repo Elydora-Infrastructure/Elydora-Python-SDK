@@ -210,12 +210,6 @@ def _current_user_sid() -> Tuple[Any, str]:
             close_handle(int(token_value))
 
 
-def current_user_sid_string() -> str:
-    """Return the stable current-user SID used by the state namespace."""
-    _sid, sid_text = _current_user_sid()
-    return sid_text
-
-
 def _security_descriptor(directory: bool) -> Tuple[int, int]:
     _sid, sid_text = _current_user_sid()
     inheritance = "OICI" if directory else ""
@@ -491,7 +485,6 @@ def verify_private_path(path: str, *, directory: bool) -> None:
 
 __all__ = [
     "close_handle",
-    "current_user_sid_string",
     "ensure_private_directory",
     "open_private_file",
     "verify_private_path",

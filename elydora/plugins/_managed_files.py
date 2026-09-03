@@ -28,14 +28,7 @@ class DirectorySnapshot:
 
 
 def identity_mode_bits(mode: int) -> int:
-    """Collapse permission bits that are not identity evidence on Windows.
-
-    Windows synthesizes POSIX modes and derives execute bits from the file
-    extension for path stats but not for handle stats, so the synthetic value
-    cannot serve as identity there. Windows permissions are enforced through
-    DACLs in _windows_security instead. Captured snapshots still store the
-    raw bits because restoration re-applies them.
-    """
+    """Windows synthesizes mode bits, so they are not identity there."""
     return mode if os.name != "nt" else 0
 
 
@@ -44,12 +37,8 @@ def portable_file_mode(metadata: os.stat_result) -> int:
     return identity_mode_bits(stat.S_IMODE(metadata.st_mode))
 
 
-def _stable_file_metadata(
-    metadata: os.stat_result,
-) -> tuple[int, int, int, int]:
-    # Timestamps are excluded deliberately: Windows exposes file times with
-    # delayed cross-handle visibility, so they are unsound identity evidence.
-    # Content changes are caught by the verification re-read instead.
+def stable_file_metadata(metadata: os.stat_result) -> tuple[int, int, int, int]:
+    """Identity without timestamps; Windows file times lag across handles."""
     return (
         metadata.st_dev,
         metadata.st_ino,
@@ -58,11 +47,8 @@ def _stable_file_metadata(
     )
 
 
-def _same_file_metadata(
-    first: os.stat_result,
-    second: os.stat_result,
-) -> bool:
-    return _stable_file_metadata(first) == _stable_file_metadata(second)
+def same_file_metadata(first: os.stat_result, second: os.stat_result) -> bool:
+    return stable_file_metadata(first) == stable_file_metadata(second)
 
 
 def assert_content_stable(
@@ -73,12 +59,7 @@ def assert_content_stable(
     raw: bytes,
     maximum_bytes: int,
 ) -> None:
-    """Re-read a just-read file and require identical identity and bytes.
-
-    This is the deterministic replacement for timestamp comparisons: a
-    concurrent in-place rewrite is proven by content divergence between the
-    two reads, independent of filesystem timer visibility.
-    """
+    """Re-read the file and require identical identity and bytes."""
     descriptor = opener()
     try:
         current = os.fstat(descriptor)
@@ -110,26 +91,25 @@ def _inspect_regular_file(file_path: str, label: str) -> Optional[os.stat_result
     return metadata
 
 
-def read_physical_file(
+def read_file_snapshot(
+    before: os.stat_result,
+    opener: Callable[[int], int],
     file_path: str,
     label: str,
-    maximum_bytes: int = MAX_SOURCE_BYTES,
-) -> Optional[FileSnapshot]:
-    before = _inspect_regular_file(file_path, label)
-    if before is None:
-        return None
+    maximum_bytes: int,
+) -> FileSnapshot:
+    """Read one regular file through opener and prove it stayed stable."""
     if before.st_size > maximum_bytes:
         raise ValueError(f"{label} exceeds {maximum_bytes} bytes: {file_path}")
-
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = -1
     try:
-        descriptor = os.open(file_path, flags)
+        descriptor = opener(flags)
         after = os.fstat(descriptor)
         if not stat.S_ISREG(after.st_mode):
             raise OSError(f"{label} path is not a physical file: {file_path}")
-        if not _same_file_metadata(before, after):
+        if not same_file_metadata(before, after):
             raise OSError(f"{label} changed while opening: {file_path}")
         if after.st_size > maximum_bytes:
             raise ValueError(f"{label} exceeds {maximum_bytes} bytes: {file_path}")
@@ -137,15 +117,10 @@ def read_physical_file(
             descriptor = -1
             raw = file.read(maximum_bytes + 1)
             finished = os.fstat(file.fileno())
-        if not _same_file_metadata(finished, after):
+        if not same_file_metadata(finished, after):
             raise OSError(f"{label} changed while reading: {file_path}")
         assert_content_stable(
-            lambda: os.open(file_path, flags),
-            file_path,
-            label,
-            after,
-            raw,
-            maximum_bytes,
+            lambda: opener(flags), file_path, label, after, raw, maximum_bytes
         )
     except OSError as error:
         raise OSError(f"Read {label} at {file_path}: {error}") from error
@@ -159,11 +134,19 @@ def read_physical_file(
         contents = raw.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValueError(f"{label} at {file_path} must contain UTF-8 text") from error
-    return FileSnapshot(
-        contents=contents,
-        device=after.st_dev,
-        inode=after.st_ino,
-        mode=stat.S_IMODE(after.st_mode),
+    return FileSnapshot(contents, after.st_dev, after.st_ino, stat.S_IMODE(after.st_mode))
+
+
+def read_physical_file(
+    file_path: str,
+    label: str,
+    maximum_bytes: int = MAX_SOURCE_BYTES,
+) -> Optional[FileSnapshot]:
+    before = _inspect_regular_file(file_path, label)
+    if before is None:
+        return None
+    return read_file_snapshot(
+        before, lambda flags: os.open(file_path, flags), file_path, label, maximum_bytes
     )
 
 

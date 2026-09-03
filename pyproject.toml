@@ -47,3 +47,6 @@ elydora = ["py.typed"]
 
 [tool.setuptools.dynamic]
 version = {attr = "elydora._version.__version__"}
+
+[tool.mypy]
+platform = "win32"

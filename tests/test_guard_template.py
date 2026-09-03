@@ -9,7 +9,7 @@ import sys
 from threading import Thread
 import time
 
-from elydora.plugins.hook_template import generate_guard_script
+from elydora.plugins.guard_template import generate_guard_script
 
 
 AGENT_ID = "agent 1"

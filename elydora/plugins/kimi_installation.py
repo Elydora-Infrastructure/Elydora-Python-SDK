@@ -12,7 +12,8 @@ from elydora._runtime_paths import resolve_agent_directory
 from ._managed_files import MAX_CONFIG_BYTES, MAX_SECRET_BYTES, MAX_SOURCE_BYTES
 from ._transaction import FileChange, file_change, source_change, write_changes
 from .base import InstallConfig
-from .hook_template import generate_guard_script, generate_hook_script
+from .guard_template import generate_guard_script
+from .hook_template import generate_hook_script
 from .kimi_command import runtime_root, same_kimi_path
 from .kimi_contract import (
     AGENT_KEY,

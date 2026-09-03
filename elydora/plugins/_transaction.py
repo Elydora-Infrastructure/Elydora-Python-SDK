@@ -6,12 +6,7 @@ import os
 from typing import List, Optional, Sequence, cast
 from uuid import uuid4
 
-from ._managed_files import (
-    FileSnapshot,
-    MAX_SOURCE_BYTES,
-    physical_file_exists,
-    read_physical_file,
-)
+from ._managed_files import FileSnapshot, MAX_SOURCE_BYTES, read_physical_file
 from ._opaque_cleanup import cleanup_opaque_removal
 from ._opaque_removal import (
     OpaqueRemovalChange,
@@ -63,15 +58,6 @@ _EXPECTED_SNAPSHOT_UNSET = object()
 def recover_pending_transactions() -> None:
     """Recover a journal left by a terminated transaction process."""
     _recover_pending_transactions()
-
-
-def read_optional(
-    file_path: str,
-    label: str,
-    maximum_bytes: int = MAX_SOURCE_BYTES,
-) -> Optional[str]:
-    snapshot = read_physical_file(file_path, label, maximum_bytes)
-    return None if snapshot is None else snapshot.contents
 
 
 def source_change(
@@ -479,14 +465,3 @@ def write_changes(
             directory_preconditions,
             opaque_removals,
         )
-
-
-def regular_file_exists(file_path: str, label: str) -> bool:
-    return physical_file_exists(file_path, label)
-
-
-def require_runtime(file_path: str, label: str) -> None:
-    if not file_path:
-        raise ValueError(f"{label} path is required")
-    if not regular_file_exists(file_path, label):
-        raise FileNotFoundError(f"{label} is missing: {file_path}")
