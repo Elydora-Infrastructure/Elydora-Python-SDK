@@ -351,6 +351,10 @@ class IssueApiTokenResponse(TypedDict):
     token_id: str
 
 
+# Deprecated alias for IssueApiTokenResponse.
+IssueTokenResponse = IssueApiTokenResponse
+
+
 class RotateApiTokenResponse(TypedDict):
     token: str
     expires_at: Optional[int]

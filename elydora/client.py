@@ -181,6 +181,15 @@ class ElydoraClient:
     def issue_api_token(self, ttl_seconds: Optional[int] = None) -> IssueApiTokenResponse:
         return self._request("POST", "/v1/auth/token", json_body=api_token_body(ttl_seconds))
 
+    def issue_token(self, ttl_seconds: Optional[int] = None) -> IssueApiTokenResponse:
+        """Deprecated alias for issue_api_token()."""
+        warnings.warn(
+            "ElydoraClient.issue_token() is deprecated. Use issue_api_token().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.issue_api_token(ttl_seconds=ttl_seconds)
+
     def rotate_api_token(self) -> RotateApiTokenResponse:
         return self._request("POST", "/v1/auth/rotate", json_body={})
 
