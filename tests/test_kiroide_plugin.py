@@ -18,6 +18,7 @@ import pytest
 
 from elydora import cli
 from elydora.plugins import kiroide
+from elydora.plugins._shell_command import is_python_executable, windows_powershell_path
 from elydora.plugins import (
     _transaction,
     kiroide_command,
@@ -1377,7 +1378,7 @@ def test_kiroide_current_commands_require_the_system_powershell_launcher(
 ) -> None:
     fixture = _prepare_fixture(monkeypatch, tmp_path)
     command = kiroide_command.build_kiroide_command(str(fixture.guard_path))
-    expected = f'"{kiroide_command._windows_powershell_path()}"'
+    expected = f'"{windows_powershell_path()}"'
     altered = command.replace(expected, r'"C:\Other\powershell.exe"', 1)
 
     assert kiroide_command.kiroide_runtime_reference(altered, "guard.py") is None
@@ -1415,7 +1416,7 @@ def test_kiroide_windows_launcher_fails_when_python_is_missing(
 def test_kiroide_ownership_accepts_supported_python_runtime_names(
     executable_name: str,
 ) -> None:
-    assert kiroide_command._is_python_executable(executable_name)
+    assert is_python_executable(executable_name)
 
 
 def test_kiroide_builder_rejects_unrecoverable_executable_names(

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 import os
-from typing import Any, List, Optional
-import urllib.parse
+from typing import List, Optional
 
 from elydora._runtime_paths import resolve_agent_directory, runtime_root
 
@@ -20,10 +18,17 @@ from ._managed_files import (
     read_physical_directory,
     read_physical_file,
 )
+from ._runtime import (
+    RUNTIME_ARTIFACTS,
+    RUNTIME_CONFIG_FIELDS,
+    expected_runtime_scripts,
+    require_non_empty_string,
+    same_agent_id,
+    same_path,
+    validate_api_origin,
+    validate_private_key,
+)
 from ._strict_json import JsonObject, parse_json_object
-from .guard_template import generate_guard_script
-from .hook_template import generate_hook_script
-from .kiroide_command import same_kiroide_agent_id, same_kiroide_path
 from .kiroide_contract import (
     AGENT_KEY,
     CONFIG_FILE,
@@ -187,67 +192,7 @@ def require_physical_legacy_directory(legacy: LegacyKiroIdeDocument) -> None:
         )
 
 
-def validate_api_origin(value: str, label: str = "base_url") -> None:
-    try:
-        parsed = urllib.parse.urlsplit(value)
-        hostname = parsed.hostname
-        parsed.port
-    except ValueError as error:
-        raise ValueError(f"{label} must be an absolute HTTP or HTTPS URL") from error
-    invalid_character = "\\" in value or any(
-        character.isspace() or ord(character) < 32 for character in value
-    )
-    if (
-        parsed.scheme not in ("http", "https")
-        or not parsed.netloc
-        or hostname is None
-        or invalid_character
-    ):
-        raise ValueError(f"{label} must be an absolute HTTP or HTTPS URL")
-    if (
-        parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError(
-            f"{label} must exclude credentials, query parameters, and fragments"
-        )
-
-
-def validate_private_key(value: str, label: str = "private_key") -> None:
-    try:
-        padded = value + "=" * ((4 - len(value) % 4) % 4)
-        seed = base64.b64decode(
-            padded.replace("-", "+").replace("_", "/"), validate=True
-        )
-        canonical = base64.urlsafe_b64encode(seed).rstrip(b"=").decode("ascii")
-    except (ValueError, UnicodeEncodeError) as error:
-        raise ValueError(
-            f"{label} must be a canonical 32-byte base64url value"
-        ) from error
-    if len(seed) != 32 or canonical != value:
-        raise ValueError(f"{label} must be a canonical 32-byte base64url value")
-
-
-def _require_non_empty_string(value: Any, field: str, config_path: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Elydora runtime config {field} is invalid: {config_path}")
-    return value
-
-
-def _read_runtime_config(file_path: str) -> Optional[JsonObject]:
-    snapshot = read_physical_file(
-        file_path, "Elydora runtime config", MAX_CONFIG_BYTES
-    )
-    if snapshot is None:
-        return None
-    return parse_json_object(
-        snapshot.contents, f"Elydora runtime config at {file_path}"
-    )
-
-
-def _validate_runtime_config(
+def validate_kiroide_runtime_config(
     config: JsonObject,
     expected_agent_id: str,
     config_path: str,
@@ -255,27 +200,19 @@ def _validate_runtime_config(
     allow_missing_workspace_root: bool = False,
     allow_legacy_ownerless_config: bool = False,
 ) -> None:
-    supported = {
-        "org_id",
-        "agent_id",
-        "kid",
-        "base_url",
-        "token",
-        "agent_name",
-        "workspace_root",
-    }
+    supported = RUNTIME_CONFIG_FIELDS | {"workspace_root"}
     extra = next((key for key in config if key not in supported), None)
     if extra is not None:
         raise ValueError(
             f'Elydora runtime config has unsupported field "{extra}": {config_path}'
         )
-    _require_non_empty_string(config.get("org_id"), "org_id", config_path)
-    _require_non_empty_string(config.get("kid"), "kid", config_path)
-    agent_id = _require_non_empty_string(
+    require_non_empty_string(config.get("org_id"), "org_id", config_path)
+    require_non_empty_string(config.get("kid"), "kid", config_path)
+    agent_id = require_non_empty_string(
         config.get("agent_id"), "agent_id", config_path
     )
     if (
-        not same_kiroide_agent_id(agent_id, expected_agent_id)
+        not same_agent_id(agent_id, expected_agent_id)
         or config.get("agent_name") != AGENT_KEY
     ):
         raise ValueError(
@@ -289,8 +226,8 @@ def _validate_runtime_config(
     if "token" in config and not (
         legacy_ownerless_config and config.get("token") == ""
     ):
-        _require_non_empty_string(config.get("token"), "token", config_path)
-    base_url = _require_non_empty_string(
+        require_non_empty_string(config.get("token"), "token", config_path)
+    base_url = require_non_empty_string(
         config.get("base_url"), "base_url", config_path
     )
     validate_api_origin(base_url, "Elydora runtime config base_url")
@@ -298,37 +235,18 @@ def _validate_runtime_config(
         allow_missing_workspace_root or legacy_ownerless_config
     ):
         return
-    workspace_root = _require_non_empty_string(
+    workspace_root = require_non_empty_string(
         configured_workspace, "workspace_root", config_path
     )
     if not os.path.isabs(workspace_root):
         raise ValueError(
             f"Elydora runtime config workspace_root must be absolute: {config_path}"
         )
-    if not same_kiroide_path(workspace_root, expected_workspace_root):
+    if not same_path(workspace_root, expected_workspace_root):
         raise ValueError(
             "Elydora Kiro IDE agent is bound to another workspace: "
             f"{workspace_root}"
         )
-
-
-def validate_kiroide_runtime_config(
-    config: JsonObject,
-    expected_agent_id: str,
-    config_path: str,
-    expected_workspace_root: str,
-    allow_missing_workspace_root: bool = False,
-    allow_legacy_ownerless_config: bool = False,
-) -> None:
-    """Validate a runtime config already read through a pinned directory."""
-    _validate_runtime_config(
-        config,
-        expected_agent_id,
-        config_path,
-        expected_workspace_root,
-        allow_missing_workspace_root,
-        allow_legacy_ownerless_config,
-    )
 
 
 def validate_runtime_tree(
@@ -346,27 +264,21 @@ def validate_runtime_tree(
     ):
         return
     config_path = os.path.join(agent_directory, "config.json")
-    config = _read_runtime_config(config_path)
-    artifact_exists = any(
+    config_snapshot = read_physical_file(config_path, "Elydora runtime config", MAX_CONFIG_BYTES)
+    artifact_states = [
         physical_file_exists(os.path.join(agent_directory, name), label)
-        for name, label in (
-            ("private.key", "Elydora private key"),
-            ("guard.py", "Elydora guard runtime"),
-            ("hook.py", "Elydora audit runtime"),
-            ("chain-state.json", "Elydora chain state"),
-            ("status-cache.json", "Elydora status cache"),
-            ("error.log", "Elydora error log"),
-        )
-    )
-    if config is None:
+        for name, label in RUNTIME_ARTIFACTS
+    ]
+    artifact_exists = any(artifact_states)
+    if config_snapshot is None:
         if artifact_exists:
             raise ValueError(
                 "Elydora runtime identity cannot be verified without config.json: "
                 f"{agent_directory}"
             )
         return
-    _validate_runtime_config(
-        config,
+    validate_kiroide_runtime_config(
+        parse_json_object(config_snapshot.contents, f"Elydora runtime config at {config_path}"),
         agent_id,
         config_path,
         workspace_root,
@@ -381,8 +293,8 @@ def _runtime_contract_exists(
     root = runtime_root()
     agent_directory = os.path.dirname(contract.guard_path)
     if (
-        not same_kiroide_path(os.path.dirname(agent_directory), root)
-        or not same_kiroide_path(
+        not same_path(os.path.dirname(agent_directory), root)
+        or not same_path(
             contract.audit_path, os.path.join(agent_directory, "hook.py")
         )
     ):
@@ -414,7 +326,7 @@ def _runtime_contract_exists(
     audit = read_physical_file(contract.audit_path, "Elydora audit runtime")
     if config is None or key is None or guard is None or audit is None:
         return False
-    _validate_runtime_config(
+    validate_kiroide_runtime_config(
         config,
         contract.agent_id,
         config_path,
@@ -436,15 +348,7 @@ def _runtime_contract_exists(
             f"its owner: {config_path}"
         )
     validate_private_key(key.contents, "Elydora private key")
-    expected_guard = generate_guard_script(AGENT_KEY, contract.agent_id)
-    expected_audit = generate_hook_script(
-        org_id=str(config["org_id"]),
-        agent_id=contract.agent_id,
-        kid=str(config["kid"]),
-        base_url=str(config["base_url"]),
-        native_payload=True,
-        agent_name=AGENT_KEY,
-    )
+    expected_guard, expected_audit = expected_runtime_scripts(AGENT_KEY, contract.agent_id, config)
     return guard.contents == expected_guard and audit.contents == expected_audit
 
 
@@ -478,15 +382,15 @@ def legacy_kiroide_contract_matches_agent(
     legacy: LegacyKiroIdeDocument, agent_id: str
 ) -> bool:
     contract = legacy.contract
-    if contract is None or not same_kiroide_agent_id(
+    if contract is None or not same_agent_id(
         contract.agent_id, agent_id
     ):
         return False
     agent_directory = resolve_agent_directory(runtime_root(), agent_id)
-    return same_kiroide_path(
+    return same_path(
         contract.guard_path,
         os.path.join(agent_directory, "guard.py"),
-    ) and same_kiroide_path(
+    ) and same_path(
         contract.audit_path,
         os.path.join(agent_directory, "hook.py"),
     )

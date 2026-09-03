@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ._runtime import same_agent_id
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .kiroide_contract import (
     AGENT_KEY,
@@ -21,7 +22,6 @@ from .kiroide_installation import (
     prepare_kiroide_installation,
     prepare_kiroide_uninstall,
 )
-from .kiroide_command import same_kiroide_agent_id
 from .kiroide_io import (
     kiroide_runtime_files_exist,
     legacy_kiroide_contract_matches_agent,
@@ -78,13 +78,13 @@ class KiroIdePlugin(AgentPlugin):
         agent_ids: list[str] = []
         for discovered_agent_id in discovered_agent_ids:
             if not any(
-                same_kiroide_agent_id(discovered_agent_id, existing_agent_id)
+                same_agent_id(discovered_agent_id, existing_agent_id)
                 for existing_agent_id in agent_ids
             ):
                 agent_ids.append(discovered_agent_id)
         for managed_agent_id in agent_ids:
             owns_workspace_runtime = any(
-                same_kiroide_agent_id(contract.agent_id, managed_agent_id)
+                same_agent_id(contract.agent_id, managed_agent_id)
                 for contract in contracts
             )
             require_kiroide_workspace_owner(

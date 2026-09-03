@@ -57,10 +57,11 @@ def encode_powershell_source(source: str) -> str:
     return base64.b64encode(source.encode("utf-16le")).decode("ascii")
 
 
-def encoded_windows_command(script_path: str) -> str:
+def encoded_windows_command(script_path: str, preamble: str = "") -> str:
+    encoded = encode_powershell_source(preamble + powershell_source(script_path))
     return (
         f'"{windows_powershell_path()}" -NoLogo -NoProfile -NonInteractive '
-        f"-EncodedCommand {encode_powershell_source(powershell_source(script_path))}"
+        f"-EncodedCommand {encoded}"
     )
 
 
@@ -141,11 +142,19 @@ def decode_powershell_source(encoded: str) -> Optional[str]:
         return None
 
 
+def same_windows_path(left: str, right: str) -> bool:
+    return ntpath.normcase(ntpath.abspath(left)) == ntpath.normcase(ntpath.abspath(right))
+
+
 def parse_encoded_windows_command(
-    command: str, prefix: str = "& "
+    command: str,
+    prefix: str = "& ",
+    powershell_path: Optional[str] = None,
 ) -> Optional[CommandParts]:
     match = _ENCODED_COMMAND.fullmatch(command)
     if match is None or not is_powershell_executable(match.group(1)):
+        return None
+    if powershell_path is not None and not same_windows_path(match.group(1), powershell_path):
         return None
     source = decode_powershell_source(match.group(2))
     return None if source is None else parse_powershell_source(source, prefix)

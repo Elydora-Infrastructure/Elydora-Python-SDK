@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import os
 from typing import List, Optional, Sequence, Tuple
-
-from elydora._runtime_paths import resolve_agent_directory, runtime_root
 
 from ._managed_files import (
     MAX_CONFIG_BYTES,
@@ -16,6 +13,14 @@ from ._managed_files import (
     read_physical_file,
 )
 from ._opaque_removal import OpaqueRemovalChange
+from ._runtime import (
+    DEFAULT_BASE_URL,
+    present,
+    resolve_runtime_paths,
+    runtime_config_source,
+    same_agent_id,
+    validate_install_config,
+)
 from ._transaction import (
     DirectoryPrecondition,
     FileChange,
@@ -34,11 +39,8 @@ from ._runtime_removal import (
 from .base import InstallConfig
 from .guard_template import generate_guard_script
 from .hook_template import generate_hook_script
-from .kiroide_command import same_kiroide_agent_id, same_kiroide_path
 from .kiroide_contract import (
     AGENT_KEY,
-    AUDIT_SCRIPT,
-    GUARD_SCRIPT,
     RenderedKiroIdeDocument,
     kiroide_runtime_contracts,
 )
@@ -54,11 +56,13 @@ from .kiroide_io import (
     LegacyKiroIdeDocument,
     legacy_kiroide_contract_matches_agent,
     require_physical_legacy_directory,
-    validate_api_origin,
     validate_kiroide_runtime_config,
-    validate_private_key,
     validate_runtime_tree,
 )
+
+PRODUCT = "Kiro IDE"
+
+
 @dataclass(frozen=True)
 class KiroIdeRuntimePaths:
     agent_id: str
@@ -74,6 +78,8 @@ class KiroIdeRuntimePaths:
 class PreparedKiroIdeInstallation:
     changes: List[FileChange]
     runtime_preconditions: List[FilePrecondition]
+
+
 @dataclass(frozen=True)
 class PreparedKiroIdeUninstall:
     changes: List[FileChange]
@@ -92,69 +98,19 @@ def _require_runtime_state(
     )
 
 
-def _runtime_config(
-    config: InstallConfig, agent_id: str, workspace_root: str
-) -> dict:
-    value = {
-        "org_id": config.get("org_id", ""),
-        "agent_id": agent_id,
-        "kid": config.get("kid", ""),
-        "base_url": config.get("base_url", "https://api.elydora.com"),
-        "agent_name": AGENT_KEY,
-        "workspace_root": workspace_root,
-    }
-    token = config.get("token")
-    if token:
-        value["token"] = token
-    return value
-
-
-def _json_source(value: dict) -> str:
-    return json.dumps(value, indent=2) + "\n"
-
-
 def _agent_paths(config: InstallConfig) -> KiroIdeRuntimePaths:
-    agent_id = config.get("agent_id", "")
-    if not agent_id:
-        raise ValueError("agent_id is required")
-    root = runtime_root()
+    paths = resolve_runtime_paths(config)
+    root = os.path.dirname(paths.agent_directory)
     runtime_parent = os.path.dirname(root)
-    agent_directory = resolve_agent_directory(root, agent_id)
-    guard_path = os.path.join(agent_directory, GUARD_SCRIPT)
-    audit_path = os.path.join(agent_directory, AUDIT_SCRIPT)
-    if not same_kiroide_path(config.get("guard_script_path", ""), guard_path):
-        raise ValueError(
-            "Elydora guard runtime must use the managed agent directory: "
-            f"{guard_path}"
-        )
-    directories = inspect_runtime_directories(
-        runtime_parent, root, agent_directory
-    )
     return KiroIdeRuntimePaths(
-        agent_id,
+        paths.agent_id,
         runtime_parent,
         root,
-        agent_directory,
-        guard_path,
-        audit_path,
-        directories,
+        paths.agent_directory,
+        paths.guard_path,
+        paths.audit_path,
+        inspect_runtime_directories(runtime_parent, root, paths.agent_directory),
     )
-
-
-def _validate_install_config(config: InstallConfig) -> KiroIdeRuntimePaths:
-    for field in ("org_id", "agent_id", "kid", "private_key", "base_url"):
-        value = config.get(field)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"{field} is required")
-    if config.get("agent_name") != AGENT_KEY:
-        raise ValueError(f"Kiro IDE installation requires agent_name {AGENT_KEY}")
-    validate_private_key(config["private_key"])
-    validate_api_origin(config["base_url"])
-    if "token" in config:
-        token = config["token"]
-        if not isinstance(token, str) or not token:
-            raise ValueError("token must be a non-empty string when provided")
-    return _agent_paths(config)
 
 
 def preflight_kiroide_installation(
@@ -162,9 +118,10 @@ def preflight_kiroide_installation(
 ) -> KiroIdeRuntimePaths:
     if not sources.document.file_path:
         raise ValueError("Kiro IDE installation requires a workspace hook path")
-    paths = _validate_install_config(config)
+    validate_install_config(config, AGENT_KEY, PRODUCT)
+    paths = _agent_paths(config)
     owns_workspace_runtime = any(
-        same_kiroide_agent_id(contract.agent_id, paths.agent_id)
+        same_agent_id(contract.agent_id, paths.agent_id)
         for contract in kiroide_runtime_contracts(sources.document.hooks)
     )
     owns_global_legacy_runtime = legacy_kiroide_contract_matches_agent(
@@ -229,7 +186,7 @@ def _removes_legacy(
 ) -> bool:
     return legacy.contract is not None and (
         not agent_id
-        or same_kiroide_agent_id(legacy.contract.agent_id, agent_id)
+        or same_agent_id(legacy.contract.agent_id, agent_id)
     )
 
 
@@ -252,10 +209,6 @@ def _legacy_change(
     )
 
 
-def _present(changes: Sequence[Optional[FileChange]]) -> List[FileChange]:
-    return [change for change in changes if change is not None]
-
-
 def prepare_kiroide_installation(
     config: InstallConfig,
     paths: KiroIdeRuntimePaths,
@@ -269,7 +222,7 @@ def prepare_kiroide_installation(
         org_id=config.get("org_id", ""),
         agent_id=paths.agent_id,
         kid=config.get("kid", ""),
-        base_url=config.get("base_url", "https://api.elydora.com"),
+        base_url=config.get("base_url", DEFAULT_BASE_URL),
         native_payload=True,
         agent_name=AGENT_KEY,
     )
@@ -280,12 +233,11 @@ def prepare_kiroide_installation(
         _runtime_change(
             os.path.join(paths.agent_directory, "config.json"),
             "Elydora runtime config",
-            _json_source(
-                _runtime_config(
-                    config,
-                    paths.agent_id,
-                    sources.paths.workspace_root,
-                )
+            runtime_config_source(
+                config,
+                paths.agent_id,
+                AGENT_KEY,
+                workspace_root=sources.paths.workspace_root,
             ),
             0o600,
             MAX_CONFIG_BYTES,
@@ -303,7 +255,7 @@ def prepare_kiroide_installation(
             paths.audit_path, "Elydora audit runtime", audit_script, 0o700
         ),
     ]
-    changes = _present(
+    changes = present(
         [
             *(change for change, _condition in runtime),
             _rendered_change(rendered),
@@ -420,7 +372,7 @@ def prepare_kiroide_uninstall(
     candidates = runtime_agent_ids or ((agent_id,) if agent_id else ())
     for runtime_agent_id in candidates:
         if any(
-            same_kiroide_agent_id(runtime_agent_id, selected_agent_id)
+            same_agent_id(runtime_agent_id, selected_agent_id)
             for selected_agent_id in selected_agent_ids
         ):
             continue
@@ -436,7 +388,7 @@ def prepare_kiroide_uninstall(
                 config_path,
                 sources.paths.workspace_root,
                 allow_missing_workspace_root=any(
-                    same_kiroide_agent_id(
+                    same_agent_id(
                         contract.agent_id, runtime_agent_id
                     )
                     for contract in kiroide_runtime_contracts(
@@ -454,7 +406,7 @@ def prepare_kiroide_uninstall(
         )
         if runtime_removal is not None:
             runtime_removals.append(runtime_removal)
-    provider_changes = _present(
+    provider_changes = present(
         [_rendered_change(rendered), _legacy_change(sources.legacy, agent_id)]
     )
     return PreparedKiroIdeUninstall(

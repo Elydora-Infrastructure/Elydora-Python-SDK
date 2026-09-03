@@ -169,13 +169,16 @@ def validate_runtime_config(
     validate_api_origin(base_url, "Elydora runtime config base_url")
 
 
-def runtime_config_source(config: InstallConfig, agent_id: str, agent_key: str) -> str:
+def runtime_config_source(
+    config: InstallConfig, agent_id: str, agent_key: str, **extra: str
+) -> str:
     value = {
         "org_id": config.get("org_id", ""),
         "agent_id": agent_id,
         "kid": config.get("kid", ""),
         "base_url": config.get("base_url", DEFAULT_BASE_URL),
         "agent_name": agent_key,
+        **extra,
     }
     token = config.get("token")
     if token:

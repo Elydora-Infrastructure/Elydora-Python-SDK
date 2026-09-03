@@ -8,6 +8,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ._managed_files import FileSnapshot
+from ._runtime import same_agent_id, same_path
 from ._strict_json import JsonObject, parse_json_object
 from .kiroide_command import (
     KiroIdeRuntimeReference,
@@ -16,8 +17,6 @@ from .kiroide_command import (
     legacy_audit_reference,
     legacy_guard_reference,
     owned_kiroide_runtime_reference,
-    same_kiroide_agent_id,
-    same_kiroide_path,
 )
 
 
@@ -240,7 +239,7 @@ def _managed_pair(
     if (
         guard is None
         or audit is None
-        or not same_kiroide_agent_id(guard.agent_id, audit.agent_id)
+        or not same_agent_id(guard.agent_id, audit.agent_id)
     ):
         return None
     return (guards[0][0], guard), (audits[0][0], audit)
@@ -289,7 +288,7 @@ def without_managed_kiroide_hooks(
     for index, hook in enumerate(hooks):
         reference = owned.get(index)
         remove = reference is not None and (
-            not agent_id or same_kiroide_agent_id(reference.agent_id, agent_id)
+            not agent_id or same_agent_id(reference.agent_id, agent_id)
         )
         if not remove:
             result.append(hook)
@@ -382,8 +381,8 @@ def legacy_kiroide_runtime_contract(
     if (
         guard is None
         or audit is None
-        or not same_kiroide_agent_id(guard.agent_id, audit.agent_id)
-        or not same_kiroide_path(
+        or not same_agent_id(guard.agent_id, audit.agent_id)
+        or not same_path(
             os.path.dirname(guard.script_path), os.path.dirname(audit.script_path)
         )
     ):

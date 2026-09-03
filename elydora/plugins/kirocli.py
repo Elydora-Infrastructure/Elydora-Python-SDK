@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shlex
-import stat
 import subprocess
 import sys
-import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
+from ._file_io import read_json, regular_file_exists, remove_file, write_json_atomic, write_text_atomic
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .hook_template import generate_hook_script
 
@@ -42,11 +40,11 @@ class KiroCliPlugin(AgentPlugin):
             raise ValueError("agent_id is required")
         if not guard_path:
             raise ValueError("guard_script_path is required")
-        if not _regular_file_exists(guard_path, "Elydora guard runtime"):
+        if not regular_file_exists(guard_path, "Elydora guard runtime"):
             raise FileNotFoundError(f"Elydora guard runtime is missing: {guard_path}")
 
-        v2_settings = _read_json(V2_AGENT_PATH, "Kiro CLI v2 agent config") or {}
-        v3_settings = _read_json(V3_HOOKS_PATH, "Kiro CLI v3 hooks config") or {}
+        v2_settings = read_json(V2_AGENT_PATH, "Kiro CLI v2 agent config") or {}
+        v3_settings = read_json(V3_HOOKS_PATH, "Kiro CLI v3 hooks config") or {}
         v2_hooks = _hooks_object(v2_settings, "Kiro CLI v2 agent config")
         current_v3_hooks = _v3_hooks(v3_settings)
 
@@ -108,22 +106,28 @@ class KiroCliPlugin(AgentPlugin):
             kid=config.get("kid", ""),
             base_url=config.get("base_url", "https://api.elydora.com"),
         )
-        _write_json_atomic(os.path.join(agent_dir, "config.json"), runtime_config, 0o600)
-        _write_text_atomic(
+        write_json_atomic(
+            os.path.join(agent_dir, "config.json"),
+            runtime_config,
+            0o600,
+            "Elydora runtime config",
+        )
+        write_text_atomic(
             os.path.join(agent_dir, "private.key"),
             config.get("private_key", ""),
             0o600,
+            "Elydora private key",
         )
-        _write_text_atomic(hook_path, hook_script, 0o700)
-        _write_json_atomic(V2_AGENT_PATH, next_v2_settings, 0o600)
-        _write_json_atomic(V3_HOOKS_PATH, next_v3_settings, 0o600)
+        write_text_atomic(hook_path, hook_script, 0o700, "Elydora audit runtime")
+        write_json_atomic(V2_AGENT_PATH, next_v2_settings, 0o600, "Kiro CLI v2 agent config")
+        write_json_atomic(V3_HOOKS_PATH, next_v3_settings, 0o600, "Kiro CLI v3 hooks config")
 
         print('Kiro CLI v2: start with "kiro-cli --agent elydora-audit".')
         print('Kiro CLI v3: start with "kiro-cli --v3"; global hooks load automatically.')
 
     def uninstall(self, agent_id: str = "") -> None:
-        v2_settings = _read_json(V2_AGENT_PATH, "Kiro CLI v2 agent config")
-        v3_settings = _read_json(V3_HOOKS_PATH, "Kiro CLI v3 hooks config")
+        v2_settings = read_json(V2_AGENT_PATH, "Kiro CLI v2 agent config")
+        v3_settings = read_json(V3_HOOKS_PATH, "Kiro CLI v3 hooks config")
 
         next_v2: Optional[Tuple[JsonObject, bool]] = None
         if v2_settings is not None:
@@ -153,22 +157,22 @@ class KiroCliPlugin(AgentPlugin):
         if next_v2 is not None:
             settings, remove = next_v2
             if remove:
-                _remove_file(V2_AGENT_PATH, "Kiro CLI v2 agent config")
+                remove_file(V2_AGENT_PATH, "Kiro CLI v2 agent config")
             else:
-                _write_json_atomic(V2_AGENT_PATH, settings, 0o600)
+                write_json_atomic(V2_AGENT_PATH, settings, 0o600, "Kiro CLI v2 agent config")
 
         if next_v3 is not None:
             settings, remove = next_v3
             if remove:
-                _remove_file(V3_HOOKS_PATH, "Kiro CLI v3 hooks config")
+                remove_file(V3_HOOKS_PATH, "Kiro CLI v3 hooks config")
             else:
-                _write_json_atomic(V3_HOOKS_PATH, settings, 0o600)
+                write_json_atomic(V3_HOOKS_PATH, settings, 0o600, "Kiro CLI v3 hooks config")
 
         print("Elydora hooks uninstalled from Kiro CLI.")
 
     def status(self) -> PluginStatus:
-        v2_settings = _read_json(V2_AGENT_PATH, "Kiro CLI v2 agent config")
-        v3_settings = _read_json(V3_HOOKS_PATH, "Kiro CLI v3 hooks config")
+        v2_settings = read_json(V2_AGENT_PATH, "Kiro CLI v2 agent config")
+        v3_settings = read_json(V3_HOOKS_PATH, "Kiro CLI v3 hooks config")
         contracts: List[HookContract] = []
 
         if v2_settings is not None:
@@ -202,63 +206,6 @@ class KiroCliPlugin(AgentPlugin):
             else f"Configured at {config_path}; runtime scripts missing"
         )
         return PluginStatus(installed=installed, agent=AGENT_KEY, details=details)
-
-
-def _read_json(path: str, label: str) -> Optional[JsonObject]:
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            raw = file.read()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise OSError(f"Read {label} at {path}: {error}") from error
-
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as error:
-        raise ValueError(f"Failed to parse {label} at {path}: {error}") from error
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} at {path} must contain a JSON object")
-    return value
-
-
-def _write_text_atomic(path: str, content: str, mode: int) -> None:
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    descriptor, temporary_path = tempfile.mkstemp(
-        dir=directory,
-        prefix=f".{os.path.basename(path)}.",
-        suffix=".tmp",
-        text=True,
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
-            file.write(content)
-        os.chmod(temporary_path, mode)
-        os.replace(temporary_path, path)
-    except BaseException as write_error:
-        try:
-            os.remove(temporary_path)
-        except FileNotFoundError:
-            pass
-        except OSError as cleanup_error:
-            raise RuntimeError(
-                f"Write {path} failed and temporary file cleanup also failed: {cleanup_error}"
-            ) from write_error
-        raise
-
-
-def _write_json_atomic(path: str, value: JsonObject, mode: int) -> None:
-    _write_text_atomic(path, json.dumps(value, indent=2) + "\n", mode)
-
-
-def _remove_file(path: str, label: str) -> None:
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        return
-    except OSError as error:
-        raise OSError(f"Remove {label} at {path}: {error}") from error
 
 
 def _build_command(script_path: str) -> str:
@@ -385,16 +332,6 @@ def _find_v3_command(
     return None
 
 
-def _regular_file_exists(path: str, label: str) -> bool:
-    try:
-        metadata = os.stat(path)
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise OSError(f"Read {label} at {path}: {error}") from error
-    return stat.S_ISREG(metadata.st_mode)
-
-
 def _runtime_scripts_exist(contracts: List[HookContract]) -> bool:
     try:
         with os.scandir(ELYDORA_DIR) as iterator:
@@ -421,10 +358,10 @@ def _runtime_scripts_exist(contracts: List[HookContract]) -> bool:
             continue
 
         config_path = os.path.join(entry.path, "config.json")
-        config = _read_json(config_path, "Elydora runtime config")
+        config = read_json(config_path, "Elydora runtime config")
         if config is None or config.get("agent_name") != AGENT_KEY:
             continue
-        return _regular_file_exists(
+        return regular_file_exists(
             guard_path, "Elydora guard runtime"
-        ) and _regular_file_exists(hook_path, "Elydora audit runtime")
+        ) and regular_file_exists(hook_path, "Elydora audit runtime")
     return False
