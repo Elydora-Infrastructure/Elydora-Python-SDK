@@ -10,7 +10,7 @@ import tempfile
 from typing import Dict, List, Optional, Set, Tuple
 
 from ._dotenv import parse_dotenv
-from ._managed_files import MAX_SOURCE_BYTES, FileSnapshot, read_physical_file
+from ._managed_files import MAX_SOURCE_BYTES, read_physical_file
 from ._runtime import same_path, unique_preconditions
 from ._transaction import FilePrecondition
 from .qwen_config import (

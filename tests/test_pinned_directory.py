@@ -21,7 +21,7 @@ def test_darwin_private_directory_removal_uses_stdlib_dir_fd(
         calls.append((path, dir_fd))
 
     monkeypatch.setattr(_private_artifact.os, "rmdir", record_rmdir)
-    monkeypatch.setattr(_private_artifact.os, "supports_dir_fd", {record_rmdir})
+    monkeypatch.setattr(_private_artifact, "_RMDIR_SUPPORTS_DIR_FD", True)
 
     _private_artifact._remove_posix_private_directory(41, "private-container")
 

@@ -12,9 +12,12 @@ from ._managed_files import DirectorySnapshot, FileSnapshot
 from ._pinned_directory import PinnedDirectory
 
 
+_RMDIR_SUPPORTS_DIR_FD = os.rmdir in os.supports_dir_fd
+
+
 def _remove_posix_private_directory(parent_descriptor: int, name: str) -> None:
     """Remove one empty child through the platform's native *at semantics."""
-    if os.rmdir not in os.supports_dir_fd:
+    if not _RMDIR_SUPPORTS_DIR_FD:
         raise OSError("Host does not support identity-bound directory removal")
     os.rmdir(name, dir_fd=parent_descriptor)
 
