@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 from ._managed_files import (
     MAX_SOURCE_BYTES,
     physical_directory_exists,
     read_physical_file,
 )
+from ._runtime import same_path, unique_preconditions
 from ._transaction import FilePrecondition
-from .letta_command import same_letta_path
 from .letta_config import (
     LettaDocument,
     create_letta_document,
@@ -76,15 +76,6 @@ def _source_precondition(document: LettaDocument) -> FilePrecondition:
     )
 
 
-def _deduplicate_preconditions(
-    values: list[FilePrecondition],
-) -> Tuple[FilePrecondition, ...]:
-    result: Dict[str, FilePrecondition] = {}
-    for value in values:
-        result.setdefault(_comparison_path(value.file_path), value)
-    return tuple(result.values())
-
-
 def _effective_disable(
     global_settings: LettaDocument,
     project: LettaDocument,
@@ -111,7 +102,7 @@ def read_letta_sources() -> LettaSources:
     physical_directory_exists(
         global_directory, "Letta Code global configuration directory"
     )
-    if not same_letta_path(project_directory, global_directory):
+    if not same_path(project_directory, global_directory):
         physical_directory_exists(
             project_directory, "Letta Code project configuration directory"
         )
@@ -141,7 +132,7 @@ def read_letta_sources() -> LettaSources:
         _effective_disable(
             global_settings, project, project_local, project_active
         ),
-        _deduplicate_preconditions(preconditions),
+        unique_preconditions(preconditions),
     )
 
 

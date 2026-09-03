@@ -6,7 +6,7 @@ import base64
 from dataclasses import dataclass
 import json
 import os
-from typing import Any, List, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 import urllib.parse
 
 from elydora._runtime_paths import resolve_agent_directory, runtime_root
@@ -20,7 +20,7 @@ from ._managed_files import (
     read_physical_file,
 )
 from ._strict_json import JsonObject, parse_json_object
-from ._transaction import FileChange, file_change, source_change
+from ._transaction import FileChange, FilePrecondition, file_change, source_change
 from .base import InstallConfig
 from .guard_template import generate_guard_script
 from .hook_template import generate_hook_script
@@ -252,16 +252,31 @@ def validate_runtime_tree(
         )
 
 
-def expected_runtime_scripts(agent_key: str, agent_id: str) -> Tuple[str, str]:
+ExpectedScripts = Callable[[str, JsonObject], Tuple[str, str]]
+
+
+def expected_runtime_scripts(
+    agent_key: str,
+    agent_id: str,
+    config: Optional[JsonObject] = None,
+    **hook_options: Any,
+) -> Tuple[str, str]:
+    """Guard and audit sources; identity fields come from config when given."""
+    org_id, kid, base_url = (
+        ("", "", "")
+        if config is None
+        else (str(config["org_id"]), str(config["kid"]), str(config["base_url"]))
+    )
     return (
         generate_guard_script(agent_key, agent_id),
         generate_hook_script(
-            org_id="",
+            org_id=org_id,
             agent_id=agent_id,
-            kid="",
-            base_url="",
+            kid=kid,
+            base_url=base_url,
             native_payload=True,
             agent_name=agent_key,
+            **hook_options,
         ),
     )
 
@@ -270,7 +285,7 @@ def runtime_contract_exists(
     contract: RuntimeContractLike,
     agent_key: str,
     product_label: str,
-    expected_scripts: Optional[Tuple[str, str]] = None,
+    expected_scripts: Optional[ExpectedScripts] = None,
 ) -> bool:
     """Strict status check: valid config and key plus runtime scripts."""
     root = runtime_root()
@@ -296,7 +311,8 @@ def runtime_contract_exists(
     validate_private_key(key.contents, "Elydora private key")
     if expected_scripts is None:
         return bool(guard.contents) and bool(audit.contents)
-    return guard.contents == expected_scripts[0] and audit.contents == expected_scripts[1]
+    expected_guard, expected_audit = expected_scripts(contract.agent_id, config)
+    return guard.contents == expected_guard and audit.contents == expected_audit
 
 
 def runtime_present(contract: RuntimeContractLike, agent_key: str) -> bool:
@@ -361,3 +377,12 @@ def rendered_source_change(
     next_source: Optional[str],
 ) -> Optional[FileChange]:
     return source_change(file_path, label, original, next_source, 0o600, MAX_SOURCE_BYTES)
+
+
+def unique_preconditions(
+    values: Sequence[FilePrecondition],
+) -> Tuple[FilePrecondition, ...]:
+    result: Dict[str, FilePrecondition] = {}
+    for value in values:
+        result.setdefault(os.path.normcase(os.path.abspath(value.file_path)), value)
+    return tuple(result.values())

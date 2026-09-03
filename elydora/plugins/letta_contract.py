@@ -8,16 +8,13 @@ import os
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from elydora._runtime_paths import runtime_root
-
+from ._runtime import same_agent_id, same_path
 from .letta_command import (
     LettaRuntimeReference,
     build_letta_command,
     letta_legacy_audit_reference,
     letta_legacy_guard_reference,
     letta_runtime_reference,
-    same_letta_agent_id,
-    same_letta_path,
 )
 
 
@@ -61,10 +58,6 @@ class ManagedRemoval:
     group_index: int
     handler_indexes: Tuple[int, ...]
     remove_group: bool
-
-
-def elydora_dir() -> str:
-    return runtime_root()
 
 
 def _validate_timeout(value: JsonObject, label: str) -> None:
@@ -222,7 +215,7 @@ def managed_letta_removals(
                 is not None
                 and (
                     agent_id is None
-                    or same_letta_agent_id(reference.agent_id, agent_id)
+                    or same_agent_id(reference.agent_id, agent_id)
                 )
             )
             if indexes:
@@ -247,7 +240,7 @@ def _references_for_event(
             if (
                 reference is None
                 or reference.executable_path is None
-                or not same_letta_path(reference.executable_path, sys.executable)
+                or not same_path(reference.executable_path, sys.executable)
             ):
                 continue
             key = os.path.normcase(reference.agent_id)
@@ -267,7 +260,7 @@ def letta_runtime_contracts(hooks: LettaHooks) -> List[LettaRuntimeContract]:
         failure = failures.get(key, [])
         if len(guard) != 1 or len(post) != 1 or len(failure) != 1:
             continue
-        if not same_letta_path(post[0].script_path, failure[0].script_path):
+        if not same_path(post[0].script_path, failure[0].script_path):
             continue
         contracts.append(LettaRuntimeContract(
             guard[0].agent_id,

@@ -7,13 +7,12 @@ import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from ._runtime import same_agent_id, same_path
 from ._strict_json import JsonObject, parse_json_object
 from .grok_command import (
     GrokRuntimeReference,
     build_grok_command,
     grok_runtime_reference,
-    same_grok_agent_id,
-    same_grok_path,
 )
 
 
@@ -183,7 +182,7 @@ def _remove_from_groups(
         for handler in group["hooks"]:
             reference = _managed_reference(handler, script_name)
             remove = reference is not None and (
-                not agent_id or same_grok_agent_id(reference.agent_id, agent_id)
+                not agent_id or same_agent_id(reference.agent_id, agent_id)
             )
             if not remove:
                 kept.append(handler)
@@ -286,7 +285,7 @@ def grok_runtime_contracts(hooks: GrokHooks) -> List[GrokRuntimeContract]:
         failure = failures.get(key, [])
         if len(guard) != 1 or len(success) != 1 or len(failure) != 1:
             continue
-        if not same_grok_path(success[0].script_path, failure[0].script_path):
+        if not same_path(success[0].script_path, failure[0].script_path):
             continue
         contracts.append(GrokRuntimeContract(
             agent_id=guard[0].agent_id,

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+from typing import Tuple
 
 from ._managed_files import physical_directory_exists, read_physical_file
 from ._runtime import expected_runtime_scripts, runtime_contract_exists
+from ._strict_json import JsonObject
 from .cline_contract import AGENT_KEY, HookFile, RuntimeContract, parse_metadata
 
 
@@ -35,7 +37,9 @@ def require_available_hook_file(file: HookFile) -> None:
         )
 
 
+def _expected_scripts(agent_id: str, _config: JsonObject) -> Tuple[str, str]:
+    return expected_runtime_scripts(AGENT_KEY, agent_id)
+
+
 def runtime_files_exist(contract: RuntimeContract) -> bool:
-    return runtime_contract_exists(
-        contract, AGENT_KEY, "Cline", expected_runtime_scripts(AGENT_KEY, contract.agent_id)
-    )
+    return runtime_contract_exists(contract, AGENT_KEY, "Cline", _expected_scripts)

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from ._managed_files import MAX_SOURCE_BYTES, physical_directory_exists, read_physical_file
 from ._runtime import expected_runtime_scripts, runtime_contract_exists
+from ._strict_json import JsonObject
 from .droid_config import (
     DroidDocument,
     DroidSources,
@@ -109,13 +110,17 @@ def require_hooks_enabled(sources: DroidSources) -> None:
         )
 
 
+def _expected_scripts(agent_id: str, _config: JsonObject) -> Tuple[str, str]:
+    return expected_runtime_scripts(AGENT_KEY, agent_id)
+
+
 def runtime_files_exist(contracts: List[RuntimeContract]) -> bool:
     return any(
         runtime_contract_exists(
             contract,
             AGENT_KEY,
             "Factory Droid",
-            expected_runtime_scripts(AGENT_KEY, contract.agent_id),
+            _expected_scripts,
         )
         for contract in contracts
     )

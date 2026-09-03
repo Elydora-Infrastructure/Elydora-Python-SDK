@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict
 
+from ._runtime import RuntimePaths
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .qwen_config import render_qwen_document
 from .qwen_contract import (
@@ -15,7 +16,6 @@ from .qwen_contract import (
     qwen_runtime_contracts,
 )
 from .qwen_installation import (
-    QwenRuntimePaths,
     commit_qwen_installation,
     commit_qwen_uninstall,
     preflight_qwen_installation,
@@ -26,7 +26,7 @@ from .qwen_io import qwen_runtime_files_exist
 from .qwen_sources import read_qwen_sources
 
 
-def _installed_groups(paths: QwenRuntimePaths) -> Dict[str, JsonObject]:
+def _installed_groups(paths: RuntimePaths) -> Dict[str, JsonObject]:
     return {
         "PreToolUse": build_qwen_group(paths.guard_path, GUARD_HOOK_NAME),
         "PostToolUse": build_qwen_group(paths.audit_path, AUDIT_HOOK_NAME),

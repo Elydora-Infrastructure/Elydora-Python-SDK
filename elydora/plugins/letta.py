@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict
 
+from ._runtime import RuntimePaths
 from .base import AgentPlugin, InstallConfig, PluginStatus
 from .letta_config import render_letta_document
 from .letta_contract import (
@@ -13,7 +14,6 @@ from .letta_contract import (
     letta_runtime_contracts,
 )
 from .letta_installation import (
-    LettaRuntimePaths,
     commit_letta_installation,
     commit_letta_uninstall,
     preflight_letta_installation,
@@ -24,7 +24,7 @@ from .letta_io import letta_runtime_files_exist
 from .letta_sources import read_letta_sources
 
 
-def _installed_groups(paths: LettaRuntimePaths) -> Dict[str, JsonObject]:
+def _installed_groups(paths: RuntimePaths) -> Dict[str, JsonObject]:
     return {
         "PreToolUse": build_letta_group(paths.guard_path),
         "PostToolUse": build_letta_group(paths.audit_path),

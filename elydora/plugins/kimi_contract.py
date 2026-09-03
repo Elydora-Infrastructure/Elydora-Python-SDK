@@ -10,12 +10,11 @@ from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 from tomlkit import aot, document, dumps, inline_table, parse, table
 from tomlkit.items import AoT, Array
 
+from ._runtime import same_agent_id, same_path
 from .kimi_command import (
     KimiRuntimeReference,
     build_kimi_command,
     kimi_runtime_reference,
-    same_kimi_agent_id,
-    same_kimi_path,
 )
 
 
@@ -216,7 +215,7 @@ def remove_managed_kimi_hooks(
             else None
         )
         remove = reference is not None and (
-            not agent_id or same_kimi_agent_id(reference.agent_id, agent_id)
+            not agent_id or same_agent_id(reference.agent_id, agent_id)
         )
         if not remove:
             result.append(hook)
@@ -318,7 +317,7 @@ def kimi_runtime_contracts(
             failure = failures.get(key, [])
             if len(guard) != 1 or len(success) != 1 or len(failure) != 1:
                 continue
-            if not same_kimi_path(success[0].script_path, failure[0].script_path):
+            if not same_path(success[0].script_path, failure[0].script_path):
                 continue
             contracts.append(
                 KimiRuntimeContract(

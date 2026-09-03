@@ -205,13 +205,17 @@ def require_hooks_enabled(sources: CopilotSources) -> None:
         )
 
 
+def _expected_scripts(agent_id: str, _config: JsonObject) -> Tuple[str, str]:
+    return expected_runtime_scripts(AGENT_KEY, agent_id)
+
+
 def runtime_files_exist(contracts: List[RuntimeContract]) -> bool:
     return any(
         runtime_contract_exists(
             contract,
             AGENT_KEY,
             "Copilot",
-            expected_runtime_scripts(AGENT_KEY, contract.agent_id),
+            _expected_scripts,
         )
         for contract in contracts
     )

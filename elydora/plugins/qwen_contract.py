@@ -10,12 +10,11 @@ import shutil
 import subprocess  # nosec B404
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from ._runtime import same_agent_id, same_path
 from .qwen_command import (
     QwenRuntimeReference,
     build_qwen_command,
     qwen_runtime_reference,
-    same_qwen_agent_id,
-    same_qwen_path,
 )
 
 
@@ -100,10 +99,6 @@ class ManagedRemoval:
     group_index: int
     handler_indexes: Tuple[int, ...]
     remove_group: bool
-
-
-def elydora_dir() -> str:
-    return os.path.join(os.path.expanduser("~"), ".elydora")
 
 
 def _optional_string(value: JsonObject, field: str, label: str) -> None:
@@ -352,7 +347,7 @@ def managed_qwen_removals(
                 is not None
                 and (
                     agent_id is None
-                    or same_qwen_agent_id(reference.agent_id, agent_id)
+                    or same_agent_id(reference.agent_id, agent_id)
                 )
             )
             if indexes:
@@ -398,7 +393,7 @@ def qwen_runtime_contracts(hooks: QwenHooks) -> List[QwenRuntimeContract]:
         failure = failures.get(key, [])
         if len(guard) != 1 or len(post) != 1 or len(failure) != 1:
             continue
-        if not same_qwen_path(post[0].script_path, failure[0].script_path):
+        if not same_path(post[0].script_path, failure[0].script_path):
             continue
         contracts.append(QwenRuntimeContract(
             guard[0].agent_id,

@@ -11,8 +11,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from ._dotenv import parse_dotenv
 from ._managed_files import MAX_SOURCE_BYTES, FileSnapshot, read_physical_file
+from ._runtime import same_path, unique_preconditions
 from ._transaction import FilePrecondition
-from .qwen_command import same_qwen_path
 from .qwen_config import (
     QwenDocument,
     create_qwen_document,
@@ -127,7 +127,7 @@ def _resolve_qwen_routing() -> _RoutingResult:
     discovered_home = values.get("QWEN_HOME")
     if discovered_home and discovered_home != initial_qwen_home:
         discovered_directory = _resolve_config_path(discovered_home)
-        if not same_qwen_path(discovered_directory, initial_directory):
+        if not same_path(discovered_directory, initial_directory):
             read_candidate(os.path.join(discovered_directory, ".env"))
     resolved_home = values.get("QWEN_HOME")
     return _RoutingResult(
@@ -288,15 +288,6 @@ def _source_precondition(document: QwenDocument) -> FilePrecondition:
     )
 
 
-def _deduplicate_preconditions(
-    values: List[FilePrecondition],
-) -> Tuple[FilePrecondition, ...]:
-    result: Dict[str, FilePrecondition] = {}
-    for value in values:
-        result.setdefault(_comparison_path(value.file_path), value)
-    return tuple(result.values())
-
-
 def read_qwen_sources() -> QwenSources:
     routing = _resolve_qwen_routing()
     system_path = _system_settings_path()
@@ -355,7 +346,7 @@ def read_qwen_sources() -> QwenSources:
             system,
             workspace_active and workspace_trusted,
         ),
-        preconditions=_deduplicate_preconditions(preconditions),
+        preconditions=unique_preconditions(preconditions),
     )
 
 
