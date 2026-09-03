@@ -4,6 +4,15 @@
 
 This repository owns the published `elydora` package, its CLI, synchronous and asynchronous API clients, local signing behavior, generated hook runtimes, and Python-specific agent adapters.
 
+## Shared Modules
+
+- `elydora/_client_common.py` owns request bodies, headers, and error mapping for both clients.
+- `elydora/plugins/_runtime.py` owns runtime paths, install config validation, runtime config validation, runtime file changes, and status checks for the transactional adapters. Kiro IDE keeps its workspace-bound variants in `kiroide_io.py`; Kiro CLI and OpenCode keep their own simple checks.
+- `elydora/plugins/_shell_command.py` owns shell quoting, PowerShell encoding, and command parsing.
+- `elydora/plugins/_file_io.py` owns atomic text and JSON writes plus plain JSON reads for the non-transactional adapters.
+- `elydora/plugins/_managed_files.py` and `_transaction*.py` own physical-file reads and rollback-capable commits.
+- Put new cross-provider logic in these modules; provider files keep only their schema, ownership, and rendering rules.
+
 ## Integration Sources
 
 - Verify every agent hook contract against current official provider documentation before changing an adapter.
@@ -44,7 +53,7 @@ This repository owns the published `elydora` package, its CLI, synchronous and a
 - Keep the package, distribution, and CLI version in `elydora/_version.py`; build metadata must read that literal through Setuptools dynamic metadata.
 - Ship `elydora/py.typed` in every wheel and verify public annotations from an installed-wheel consumer.
 - Support every Python version declared in `pyproject.toml`.
-- Keep production source files at or below 500 lines.
+- Keep every source and test file at or below 500 lines; share test fixtures through `tests/<provider>_support.py`.
 - Keep functions focused on one ownership boundary.
 - Propagate unexpected errors to the CLI boundary.
 - Use documented defaults only for genuinely optional configuration.
@@ -73,6 +82,8 @@ py -3 -m pip check
 py -3 -m pip wheel . --no-deps --wheel-dir <temporary-directory>
 git diff --check
 ```
+
+On Linux and macOS use `python -m` in place of `py -3 -m`, and point `HOME` and `XDG_CONFIG_HOME` at a scratch directory so the suite never touches real agent configuration. `[tool.mypy] platform = "win32"` type-checks the Windows branches on every host.
 
 Provider adapter tests must cover installation, idempotency, official event forwarding, blocking behavior, status, missing runtime files, uninstall ownership, and malformed configuration preservation.
 
