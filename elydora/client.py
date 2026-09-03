@@ -119,8 +119,10 @@ class ElydoraClient:
             headers=build_headers(self.token),
         )
 
-    def _get_public(self, path: str) -> Any:
+    def _get_public(self, path: str, *, accept_status: Optional[int] = None) -> Any:
         response = self._session.get(f"{self.base_url}{path}", timeout=REQUEST_TIMEOUT_SECONDS)
+        if accept_status is not None and response.status_code == accept_status:
+            return response.json()
         return self._handle_response(response)
 
     @staticmethod
@@ -324,4 +326,5 @@ class ElydoraClient:
         return self._get_public("/v1/health")
 
     def deep_health(self) -> DeepHealthResponse:
-        return self._get_public("/v1/health/deep")
+        """503 carries the degraded report, not an error."""
+        return self._get_public("/v1/health/deep", accept_status=503)

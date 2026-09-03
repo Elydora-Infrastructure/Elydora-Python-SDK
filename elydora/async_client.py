@@ -130,9 +130,11 @@ class AsyncElydoraClient:
             headers=build_headers(self.token),
         )
 
-    async def _get_public(self, path: str) -> Any:
+    async def _get_public(self, path: str, *, accept_status: Optional[int] = None) -> Any:
         session = await self._get_session()
         async with session.get(f"{self.base_url}{path}", timeout=TIMEOUT) as response:
+            if accept_status is not None and response.status == accept_status:
+                return await response.json()
             return await self._handle_response(response)
 
     @staticmethod
@@ -349,4 +351,5 @@ class AsyncElydoraClient:
         return await self._get_public("/v1/health")
 
     async def deep_health(self) -> DeepHealthResponse:
-        return await self._get_public("/v1/health/deep")
+        """503 carries the degraded report, not an error."""
+        return await self._get_public("/v1/health/deep", accept_status=503)
