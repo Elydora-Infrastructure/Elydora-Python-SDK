@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from urllib.parse import quote
 from typing import Any, Dict, List, Optional, Union
 
 import requests
@@ -198,29 +199,29 @@ class ElydoraClient:
         return self._request("POST", "/v1/agents/register", json_body=request)
 
     def get_agent(self, agent_id: str) -> GetAgentResponse:
-        return self._request("GET", f"/v1/agents/{agent_id}")
+        return self._request("GET", f"/v1/agents/{quote(agent_id, safe='')}")
 
     def list_agents(self) -> ListAgentsResponse:
         return self._request("GET", "/v1/agents")
 
     def freeze_agent(self, agent_id: str, reason: str) -> FreezeAgentResponse:
-        return self._request("POST", f"/v1/agents/{agent_id}/freeze", json_body={"reason": reason})
+        return self._request("POST", f"/v1/agents/{quote(agent_id, safe='')}/freeze", json_body={"reason": reason})
 
     def unfreeze_agent(self, agent_id: str, reason: str) -> UnfreezeAgentResponse:
-        return self._request("POST", f"/v1/agents/{agent_id}/unfreeze", json_body={"reason": reason})
+        return self._request("POST", f"/v1/agents/{quote(agent_id, safe='')}/unfreeze", json_body={"reason": reason})
 
     def update_agent(self, agent_id: str, integration_type: IntegrationType) -> UpdateAgentResponse:
         require_integration_type(integration_type)
         return self._request(
-            "PATCH", f"/v1/agents/{agent_id}", json_body={"integration_type": integration_type}
+            "PATCH", f"/v1/agents/{quote(agent_id, safe='')}", json_body={"integration_type": integration_type}
         )
 
     def delete_agent(self, agent_id: str) -> DeleteAgentResponse:
-        return self._request("DELETE", f"/v1/agents/{agent_id}")
+        return self._request("DELETE", f"/v1/agents/{quote(agent_id, safe='')}")
 
     def revoke_key(self, agent_id: str, kid: str, reason: str) -> None:
         self._request(
-            "POST", f"/v1/agents/{agent_id}/revoke", json_body={"kid": kid, "reason": reason}
+            "POST", f"/v1/agents/{quote(agent_id, safe='')}/revoke", json_body={"kid": kid, "reason": reason}
         )
 
     def create_operation(

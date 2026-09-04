@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from urllib.parse import quote
 from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
@@ -212,19 +213,19 @@ class AsyncElydoraClient:
         return await self._request("POST", "/v1/agents/register", json_body=request)
 
     async def get_agent(self, agent_id: str) -> GetAgentResponse:
-        return await self._request("GET", f"/v1/agents/{agent_id}")
+        return await self._request("GET", f"/v1/agents/{quote(agent_id, safe='')}")
 
     async def list_agents(self) -> ListAgentsResponse:
         return await self._request("GET", "/v1/agents")
 
     async def freeze_agent(self, agent_id: str, reason: str) -> FreezeAgentResponse:
         return await self._request(
-            "POST", f"/v1/agents/{agent_id}/freeze", json_body={"reason": reason}
+            "POST", f"/v1/agents/{quote(agent_id, safe='')}/freeze", json_body={"reason": reason}
         )
 
     async def unfreeze_agent(self, agent_id: str, reason: str) -> UnfreezeAgentResponse:
         return await self._request(
-            "POST", f"/v1/agents/{agent_id}/unfreeze", json_body={"reason": reason}
+            "POST", f"/v1/agents/{quote(agent_id, safe='')}/unfreeze", json_body={"reason": reason}
         )
 
     async def update_agent(
@@ -232,15 +233,15 @@ class AsyncElydoraClient:
     ) -> UpdateAgentResponse:
         require_integration_type(integration_type)
         return await self._request(
-            "PATCH", f"/v1/agents/{agent_id}", json_body={"integration_type": integration_type}
+            "PATCH", f"/v1/agents/{quote(agent_id, safe='')}", json_body={"integration_type": integration_type}
         )
 
     async def delete_agent(self, agent_id: str) -> DeleteAgentResponse:
-        return await self._request("DELETE", f"/v1/agents/{agent_id}")
+        return await self._request("DELETE", f"/v1/agents/{quote(agent_id, safe='')}")
 
     async def revoke_key(self, agent_id: str, kid: str, reason: str) -> None:
         await self._request(
-            "POST", f"/v1/agents/{agent_id}/revoke", json_body={"kid": kid, "reason": reason}
+            "POST", f"/v1/agents/{quote(agent_id, safe='')}/revoke", json_body={"kid": kid, "reason": reason}
         )
 
     def create_operation(
